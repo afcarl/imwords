@@ -8,7 +8,7 @@ Bag-of-Words or the Skip-Gram neural network architectures. The user should to s
  - desired vector dimensionality
  - the size of the context window for either the Skip-Gram or the Continuous Bag-of-Words model
  - training algorithm: hierarchical softmax and / or negative sampling
- - threshold for downsampling the frequent words 
+ - threshold for downsampling the frequent words
  - number of threads to use
  - the format of the output word vector file (text or binary)
 
@@ -17,5 +17,4 @@ Usually, the other hyper-parameters such as the learning rate do not need to be 
 The script demo-word.sh downloads a small (100MB) text corpus from the web, and trains a small word vector model. After the training
 is finished, the user can interactively explore the similarity of the words.
 
-More information about the scripts is provided at https://code.google.com/p/word2vec/
-
+More information about the scripts is provided at https://web.archive.org/web/20160428084534/https://code.google.com/p/word2vec/
