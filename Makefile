@@ -6,6 +6,8 @@ all: word2vec word2phrase distance word-analogy compute-accuracy
 
 word2vec : src/word2vec.c
 	$(CC) $< -o $@ $(CFLAGS)
+word2cvec : src/word2cvec.c
+	$(CC) $< -o $@ $(CFLAGS)
 word2phrase : src/word2phrase.c
 	$(CC) $< -o $@ $(CFLAGS)
 distance : src/distance.c
