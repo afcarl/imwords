@@ -42,7 +42,7 @@ int *vocab_hash;
 long long vocab_max_size = 1000, vocab_size = 0, layer1_size = 100;
 long long train_words = 0, word_count_actual = 0, iter = 5, file_size = 0, classes = 0;
 real alpha = 0.025, starting_alpha, sample = 1e-3;
-real *syn0, *syn1, *syn1neg, *expTable;
+real *syn0, *syn0_real, *syn0_imag, *syn1, *syn1neg, *syn1neg_real, *syn1neg_imag, *expTable;
 clock_t start;
 
 int hs = 0, negative = 5;
@@ -338,8 +338,12 @@ void ReadVocab() {
 void InitNet() {
 	long long a, b;
 	unsigned long long next_random = 1;
-	a = posix_memalign((void **)&syn0, 128, (long long)vocab_size * layer1_size * sizeof(real));
-	if (syn0 == NULL) {printf("Memory allocation failed\n"); exit(1);}
+
+	a = posix_memalign((void **)&syn0_real, 128, (long long)vocab_size * layer1_size * sizeof(real));
+	if (syn0_real== NULL) {printf("Memory allocation failed\n"); exit(1);}
+	a = posix_memalign((void **)&syn0_imag, 128, (long long)vocab_size * layer1_size * sizeof(real));
+	if (syn0_imag == NULL) {printf("Memory allocation failed\n"); exit(1);}
+
 	if (hs) {
 		a = posix_memalign((void **)&syn1, 128, (long long)vocab_size * layer1_size * sizeof(real));
 		if (syn1 == NULL) {printf("Memory allocation failed\n"); exit(1);}
@@ -347,14 +351,20 @@ void InitNet() {
 			syn1[a * layer1_size + b] = 0;
 	}
 	if (negative>0) {
-		a = posix_memalign((void **)&syn1neg, 128, (long long)vocab_size * layer1_size * sizeof(real));
-		if (syn1neg == NULL) {printf("Memory allocation failed\n"); exit(1);}
-		for (a = 0; a < vocab_size; a++) for (b = 0; b < layer1_size; b++)
-			syn1neg[a * layer1_size + b] = 0;
+		a = posix_memalign((void **)&syn1neg_real, 128, (long long)vocab_size * layer1_size * sizeof(real));
+		if (syn1neg_real== NULL) {printf("Memory allocation failed\n"); exit(1);}
+		a = posix_memalign((void **)&syn1neg_imag, 128, (long long)vocab_size * layer1_size * sizeof(real));
+		if (syn1neg_imag== NULL) {printf("Memory allocation failed\n"); exit(1);}
+
+		for (a = 0; a < vocab_size; a++) for (b = 0; b < layer1_size; b++){
+			syn1neg_real[a * layer1_size + b] = 0;
+			syn1neg_imag[a * layer1_size + b] = 0;
+		}
 	}
 	for (a = 0; a < vocab_size; a++) for (b = 0; b < layer1_size; b++) {
 		next_random = next_random * (unsigned long long)25214903917 + 11;
-		syn0[a * layer1_size + b] = (((next_random & 0xFFFF) / (real)65536) - 0.5) / layer1_size;
+		syn0_real[a * layer1_size + b] = (((next_random & 0xFFFF) / (real)65536) - 0.5) / layer1_size;
+		syn0_imag[a * layer1_size + b] = (((next_random & 0xFFFF) / (real)65536) - 0.5) / layer1_size;
 	}
 	CreateBinaryTree();
 }
@@ -364,10 +374,12 @@ void *TrainModelThread(void *id) {
 	long long word_count = 0, last_word_count = 0, sen[MAX_SENTENCE_LENGTH + 1];
 	long long l1, l2, c, target, label, local_iter = iter;
 	unsigned long long next_random = (long long)id;
-	real f, g;
+	real f, g, imag_part_sign, dot_real, dot_imag;
 	clock_t now;
 	real *neu1 = (real *)calloc(layer1_size, sizeof(real));
 	real *neu1e = (real *)calloc(layer1_size, sizeof(real));
+	real *neu1e_real = (real *)calloc(layer1_size, sizeof(real));
+	real *neu1e_imag = (real *)calloc(layer1_size, sizeof(real));
 	FILE *fi = fopen(train_file, "rb");
 	fseek(fi, file_size / (long long)num_threads * (long long)id, SEEK_SET);
 	while (1) {
@@ -417,6 +429,8 @@ void *TrainModelThread(void *id) {
 		if (word == -1) continue;
 		for (c = 0; c < layer1_size; c++) neu1[c] = 0;
 		for (c = 0; c < layer1_size; c++) neu1e[c] = 0;
+		for (c = 0; c < layer1_size; c++) neu1e_real[c] = 0;
+		for (c = 0; c < layer1_size; c++) neu1e_imag[c] = 0;
 		next_random = next_random * (unsigned long long)25214903917 + 11;
 		b = next_random % window;
 		if (cbow) {  //train the cbow architecture
@@ -480,6 +494,9 @@ void *TrainModelThread(void *id) {
 				}
 			}
 		} else {  //train skip-gram
+			//That random 'b' starting points makes the window size not constant, but uniformly distributed in [0,window]
+			//Makes sense, as closer context is probably more linked to target word.
+			//Maybe uniform is not even enough, maybe we should make it geometrically decreasing with the distance to the target word
 			for (a = b; a < window * 2 + 1 - b; a++) if (a != window) {
 				c = sentence_position - window + a;
 				if (c < 0) continue;
@@ -487,13 +504,15 @@ void *TrainModelThread(void *id) {
 				last_word = sen[c];
 				if (last_word == -1) continue;
 				l1 = last_word * layer1_size;
+				//Sign of the imaginary part, depending on whether the context word is before or after the target word in the sentence
+				imag_part_sign = (a > window) * 2 + 1;
+
 				for (c = 0; c < layer1_size; c++) neu1e[c] = 0;
 				// HIERARCHICAL SOFTMAX
 				if (hs) for (d = 0; d < vocab[word].codelen; d++) {
 					f = 0;
-					l2 = vocab[word].point[d] * layer1_size;
-					// Propagate hidden -> output
-					for (c = 0; c < layer1_size; c++) f += syn0[c + l1] * syn1[c + l2];
+					l2 = vocab[word].point[d] * layer1_size; // Propagate hidden -> output 
+					for (c = 0; c < layer1_size; c++) f += syn0[c + l1] * syn1[c + l2]; 
 					if (f <= -MAX_EXP) continue;
 					else if (f >= MAX_EXP) continue;
 					else f = expTable[(int)((f + MAX_EXP) * (EXP_TABLE_SIZE / MAX_EXP / 2))];
@@ -504,6 +523,7 @@ void *TrainModelThread(void *id) {
 					// Learn weights hidden -> output
 					for (c = 0; c < layer1_size; c++) syn1[c + l2] += g * syn0[c + l1];
 				}
+
 				// NEGATIVE SAMPLING
 				if (negative > 0) for (d = 0; d < negative + 1; d++) {
 					if (d == 0) {
@@ -516,17 +536,37 @@ void *TrainModelThread(void *id) {
 						if (target == word) continue;
 						label = 0;
 					}
+
 					l2 = target * layer1_size;
-					f = 0;
-					for (c = 0; c < layer1_size; c++) f += syn0[c + l1] * syn1neg[c + l2];
+
+					//Computing score
+					dot_real = 0; dot_imag=0;
+					for (c = 0; c < layer1_size; c++){
+						dot_real += syn0_real[c + l1] * syn1neg_real[c + l2] + syn0_imag[c + l1] * syn1neg_imag[c + l2];
+						dot_imag += syn0_real[c + l1] * syn1neg_imag[c + l2] - syn0_imag[c + l1] * syn1neg_real[c + l2];
+					}
+					//Order is taken into account with the sign value in 'imag_part_sign'
+					f = dot_real + imag_part_sign * dot_imag;
+
 					if (f > MAX_EXP) g = (label - 1) * alpha;
 					else if (f < -MAX_EXP) g = (label - 0) * alpha;
 					else g = (label - expTable[(int)((f + MAX_EXP) * (EXP_TABLE_SIZE / MAX_EXP / 2))]) * alpha;
-					for (c = 0; c < layer1_size; c++) neu1e[c] += g * syn1neg[c + l2];
-					for (c = 0; c < layer1_size; c++) syn1neg[c + l2] += g * syn0[c + l1];
+					//Computing target gradients
+					for (c = 0; c < layer1_size; c++){
+						neu1e_real[c] += g * ( syn1neg_real[c + l2] + imag_part_sign * syn1neg_imag[c + l2])  ;
+						neu1e_imag[c] += g * ( syn1neg_imag[c + l2] - imag_part_sign * syn1neg_real[c + l2])  ;
+					}
+					//Computing context gradients
+					for (c = 0; c < layer1_size; c++){
+						syn1neg_real[c + l2] += g * ( syn0_real[c + l1] - imag_part_sign * syn0_imag[c + l1] ) ;
+						syn1neg_imag[c + l2] += g * ( syn0_imag[c + l1] + imag_part_sign * syn0_real[c + l1] ) ;
+					}
 				}
 				// Learn weights input -> hidden
-				for (c = 0; c < layer1_size; c++) syn0[c + l1] += neu1e[c];
+				for (c = 0; c < layer1_size; c++) {
+					syn0_real[c + l1] += neu1e_real[c];
+					syn0_imag[c + l1] += neu1e_imag[c];
+				}
 			}
 		}
 		sentence_position++;
@@ -538,6 +578,8 @@ void *TrainModelThread(void *id) {
 	fclose(fi);
 	free(neu1);
 	free(neu1e);
+	free(neu1e_real);
+	free(neu1e_imag);
 	pthread_exit(NULL);
 }
 
@@ -558,11 +600,21 @@ void TrainModel() {
 	fo = fopen(output_file, "wb");
 	if (classes == 0) {
 		// Save the word vectors
-		fprintf(fo, "%lld %lld\n", vocab_size, layer1_size);
+		fprintf(fo, "%lld %lld\n", vocab_size, 2*layer1_size); //2 times to concatenate real and imaginary parts
 		for (a = 0; a < vocab_size; a++) {
 			fprintf(fo, "%s ", vocab[a].word);
-			if (binary) for (b = 0; b < layer1_size; b++) fwrite(&syn0[a * layer1_size + b], sizeof(real), 1, fo);
-			else for (b = 0; b < layer1_size; b++) fprintf(fo, "%lf ", syn0[a * layer1_size + b]);
+			if (binary){
+				for (b = 0; b < layer1_size; b++){
+					fwrite(&syn0_real[a * layer1_size + b], sizeof(real), 1, fo);
+					fwrite(&syn0_imag[a * layer1_size + b], sizeof(real), 1, fo);
+				}
+			}
+			else {
+				for (b = 0; b < layer1_size; b++) {
+					fprintf(fo, "%lf ", syn0_real[a * layer1_size + b]);
+					fprintf(fo, "%lf ", syn0_imag[a * layer1_size + b]);
+				}
+			}
 			fprintf(fo, "\n");
 		}
 	} else {
