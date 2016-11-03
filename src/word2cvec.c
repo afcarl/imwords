@@ -494,7 +494,7 @@ void *TrainModelThread(void *id) {
 				}
 			}
 		} else {  //train skip-gram
-			//That random 'b' starting points makes the window size not constant, but uniformly distributed in [0,window]
+			//That random 'b' starting point makes the window size not constant, but uniformly distributed in [0,window]
 			//Makes sense, as closer context is probably more linked to target word.
 			//Maybe uniform is not even enough, maybe we should make it geometrically decreasing with the distance to the target word
 			for (a = b; a < window * 2 + 1 - b; a++) if (a != window) {
@@ -505,7 +505,7 @@ void *TrainModelThread(void *id) {
 				if (last_word == -1) continue;
 				l1 = last_word * layer1_size;
 				//Sign of the imaginary part, depending on whether the context word is before or after the target word in the sentence
-				imag_part_sign = (a > window) * 2 + 1;
+				imag_part_sign = (a > window) * 2 - 1;
 
 				for (c = 0; c < layer1_size; c++) neu1e[c] = 0;
 				// HIERARCHICAL SOFTMAX
@@ -540,7 +540,7 @@ void *TrainModelThread(void *id) {
 					l2 = target * layer1_size;
 
 					//Computing score
-					dot_real = 0; dot_imag=0;
+					dot_real = 0; dot_imag = 0;
 					for (c = 0; c < layer1_size; c++){
 						dot_real += syn0_real[c + l1] * syn1neg_real[c + l2] + syn0_imag[c + l1] * syn1neg_imag[c + l2];
 						dot_imag += syn0_real[c + l1] * syn1neg_imag[c + l2] - syn0_imag[c + l1] * syn1neg_real[c + l2];
