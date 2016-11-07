@@ -17,6 +17,8 @@
 #include <string.h>
 #include <math.h>
 #include <pthread.h>
+#include <assert.h>
+#include "cblas.h"
 
 #define MAX_STRING 100
 #define EXP_TABLE_SIZE 1000
@@ -505,8 +507,10 @@ void *TrainModelThread(void *id) {
 				if (last_word == -1) continue;
 				l1 = last_word * layer1_size;
 				//Sign of the imaginary part, depending on whether the context word is before or after the target word in the sentence
+				//if (a < window)	imag_part_sign = ((a-b) % 2) * 2 - 1; // (a > window) * 2 - 1;
+				//if (a > window)	imag_part_sign = ((a-b+1) % 2) * 2 - 1; // (a > window) * 2 - 1;
 				imag_part_sign = (a > window) * 2 - 1;
-
+				
 				for (c = 0; c < layer1_size; c++) neu1e[c] = 0;
 				// HIERARCHICAL SOFTMAX
 				if (hs) for (d = 0; d < vocab[word].codelen; d++) {
@@ -540,11 +544,19 @@ void *TrainModelThread(void *id) {
 					l2 = target * layer1_size;
 
 					//Computing score
-					dot_real = 0; dot_imag = 0;
-					for (c = 0; c < layer1_size; c++){
-						dot_real += syn0_real[c + l1] * syn1neg_real[c + l2] + syn0_imag[c + l1] * syn1neg_imag[c + l2];
-						dot_imag += syn0_real[c + l1] * syn1neg_imag[c + l2] - syn0_imag[c + l1] * syn1neg_real[c + l2];
-					}
+					//dot_real = 0; dot_imag = 0;
+					dot_real = cblas_sdot(layer1_size, syn0_real + l1 , 1, syn1neg_real + l2 , 1);
+					dot_real += cblas_sdot(layer1_size, syn0_imag + l1 , 1, syn1neg_imag + l2 , 1);
+					dot_imag = cblas_sdot(layer1_size, syn0_real + l1 , 1, syn1neg_imag + l2 , 1);
+					dot_imag -= cblas_sdot(layer1_size, syn0_imag + l1 , 1, syn1neg_real + l2 , 1);
+					//for (c = 0; c < layer1_size; c++){
+					//	y += syn0_real[c + l1] * syn1neg_real[c + l2];
+					//	dot_real += syn0_real[c + l1] * syn1neg_real[c + l2] + syn0_imag[c + l1] * syn1neg_imag[c + l2];
+					//	dot_imag += syn0_real[c + l1] * syn1neg_imag[c + l2] - syn0_imag[c + l1] * syn1neg_real[c + l2];
+					//}
+					//printf("%f\t%f\n",x,y);
+					//assert( x == y ) ;
+
 					//Order is taken into account with the sign value in 'imag_part_sign'
 					f = dot_real + imag_part_sign * dot_imag;
 
@@ -574,6 +586,7 @@ void *TrainModelThread(void *id) {
 			sentence_length = 0;
 			continue;
 		}
+	//	exit(0);
 	}
 	fclose(fi);
 	free(neu1);
