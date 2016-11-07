@@ -26,6 +26,9 @@
 #define MAX_SENTENCE_LENGTH 1000
 #define MAX_CODE_LENGTH 40
 
+#define USE_BLAS 0
+
+
 const int vocab_hash_size = 30000000;  // Maximum 30 * 0.7 = 21M words in the vocabulary
 
 typedef float real;                    // Precision of float numbers
@@ -536,6 +539,7 @@ void *TrainModelThread(void *id) {
 					} else {
 						next_random = next_random * (unsigned long long)25214903917 + 11;
 						target = table[(next_random >> 16) % table_size];
+						//TODO: Profiler says that target == 0 test takes 13% of time (!), probably due to branch misprediction, should replace that
 						if (target == 0) target = next_random % (vocab_size - 1) + 1;
 						if (target == word) continue;
 						label = 0;
@@ -544,18 +548,18 @@ void *TrainModelThread(void *id) {
 					l2 = target * layer1_size;
 
 					//Computing score
-					//dot_real = 0; dot_imag = 0;
+#if USE_BLAS
 					dot_real = cblas_sdot(layer1_size, syn0_real + l1 , 1, syn1neg_real + l2 , 1);
 					dot_real += cblas_sdot(layer1_size, syn0_imag + l1 , 1, syn1neg_imag + l2 , 1);
 					dot_imag = cblas_sdot(layer1_size, syn0_real + l1 , 1, syn1neg_imag + l2 , 1);
 					dot_imag -= cblas_sdot(layer1_size, syn0_imag + l1 , 1, syn1neg_real + l2 , 1);
-					//for (c = 0; c < layer1_size; c++){
-					//	y += syn0_real[c + l1] * syn1neg_real[c + l2];
-					//	dot_real += syn0_real[c + l1] * syn1neg_real[c + l2] + syn0_imag[c + l1] * syn1neg_imag[c + l2];
-					//	dot_imag += syn0_real[c + l1] * syn1neg_imag[c + l2] - syn0_imag[c + l1] * syn1neg_real[c + l2];
-					//}
-					//printf("%f\t%f\n",x,y);
-					//assert( x == y ) ;
+#else 
+					dot_real = 0; dot_imag = 0;
+					for (c = 0; c < layer1_size; c++){
+						dot_real += syn0_real[c + l1] * syn1neg_real[c + l2] + syn0_imag[c + l1] * syn1neg_imag[c + l2];
+						dot_imag += syn0_real[c + l1] * syn1neg_imag[c + l2] - syn0_imag[c + l1] * syn1neg_real[c + l2];
+					}
+#endif
 
 					//Order is taken into account with the sign value in 'imag_part_sign'
 					f = dot_real + imag_part_sign * dot_imag;
@@ -563,22 +567,44 @@ void *TrainModelThread(void *id) {
 					if (f > MAX_EXP) g = (label - 1) * alpha;
 					else if (f < -MAX_EXP) g = (label - 0) * alpha;
 					else g = (label - expTable[(int)((f + MAX_EXP) * (EXP_TABLE_SIZE / MAX_EXP / 2))]) * alpha;
-					//Computing target gradients
+
+#if USE_BLAS //0
+					//Computing target gradients (use neue1e as tmp vector for vectorization)
+					cblas_scopy(layer1_size, syn1neg_real + l2, 1, neu1e, 1);
+					cblas_saxpy(layer1_size, imag_part_sign, syn1neg_imag + l2, 1, neu1e, 1);
+					cblas_saxpy(layer1_size, g, neu1e, 1, neu1e_real, 1);
+					cblas_scopy(layer1_size, syn1neg_imag + l2, 1, neu1e, 1);
+					cblas_saxpy(layer1_size, -imag_part_sign, syn1neg_real + l2, 1, neu1e, 1);
+					cblas_saxpy(layer1_size, g, neu1e, 1, neu1e_imag, 1);
+					//Computing context gradients
+					cblas_scopy(layer1_size, syn0_real + l1, 1, neu1e, 1);
+					cblas_saxpy(layer1_size, -imag_part_sign, syn0_imag + l1, 1, neu1e, 1);
+					cblas_saxpy(layer1_size, g, neu1e, 1, syn1neg_real + l2, 1);
+					cblas_scopy(layer1_size, syn0_imag + l1, 1, neu1e, 1);
+					cblas_saxpy(layer1_size, imag_part_sign, syn0_real + l1, 1, neu1e, 1);
+					cblas_saxpy(layer1_size, g, neu1e, 1, syn1neg_imag + l2, 1);
+#else 
 					for (c = 0; c < layer1_size; c++){
+						//Computing target gradients
 						neu1e_real[c] += g * ( syn1neg_real[c + l2] + imag_part_sign * syn1neg_imag[c + l2])  ;
 						neu1e_imag[c] += g * ( syn1neg_imag[c + l2] - imag_part_sign * syn1neg_real[c + l2])  ;
-					}
-					//Computing context gradients
-					for (c = 0; c < layer1_size; c++){
+						//Computing context gradients
 						syn1neg_real[c + l2] += g * ( syn0_real[c + l1] - imag_part_sign * syn0_imag[c + l1] ) ;
 						syn1neg_imag[c + l2] += g * ( syn0_imag[c + l1] + imag_part_sign * syn0_real[c + l1] ) ;
 					}
+#endif
 				}
+
 				// Learn weights input -> hidden
+#if USE_BLAS //0
+				cblas_saxpy(layer1_size, 1, neu1e_real, 1, syn0_real + l1, 1);
+				cblas_saxpy(layer1_size, 1, neu1e_imag, 1, syn0_imag + l1, 1);
+#else
 				for (c = 0; c < layer1_size; c++) {
 					syn0_real[c + l1] += neu1e_real[c];
 					syn0_imag[c + l1] += neu1e_imag[c];
 				}
+#endif
 			}
 		}
 		sentence_position++;
