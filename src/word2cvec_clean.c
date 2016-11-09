@@ -18,7 +18,6 @@
 #include <math.h>
 #include <pthread.h>
 #include <assert.h>
-#include "cblas.h"
 
 #define MAX_STRING 100
 #define EXP_TABLE_SIZE 1000
@@ -28,6 +27,9 @@
 
 #define USE_BLAS 1
 
+#if USE_BLAS
+#include "cblas.h"
+#endif
 
 const int vocab_hash_size = 30000000;  // Maximum 30 * 0.7 = 21M words in the vocabulary
 
@@ -42,7 +44,7 @@ struct vocab_word {
 char train_file[MAX_STRING], output_file[MAX_STRING];
 char save_vocab_file[MAX_STRING], read_vocab_file[MAX_STRING];
 struct vocab_word *vocab;
-int binary = 0, cbow = 1, debug_mode = 2, window = 5, min_count = 5, num_threads = 12, min_reduce = 1;
+int binary = 0,  debug_mode = 2, window = 5, min_count = 5, num_threads = 12, min_reduce = 1, batch_size = 500, sample_size=4;
 int *vocab_hash;
 long long vocab_max_size = 1000, vocab_size = 0, layer1_size = 100;
 long long train_words = 0, word_count_actual = 0, iter = 5, file_size = 0, classes = 0;
@@ -50,7 +52,7 @@ real alpha = 0.025, starting_alpha, sample = 1e-3;
 real *syn0, *syn0_real, *syn0_imag, *syn1, *syn1neg, *syn1neg_real, *syn1neg_imag, *expTable;
 clock_t start;
 
-int hs = 0, negative = 5;
+int  negative = 5;
 const int table_size = 1e8;
 int *table;
 
@@ -197,73 +199,6 @@ void ReduceVocab() {
 	min_reduce++;
 }
 
-// Create binary Huffman tree using the word counts
-// Frequent words will have short uniqe binary codes
-void CreateBinaryTree() {
-	long long a, b, i, min1i, min2i, pos1, pos2, point[MAX_CODE_LENGTH];
-	char code[MAX_CODE_LENGTH];
-	long long *count = (long long *)calloc(vocab_size * 2 + 1, sizeof(long long));
-	long long *binary = (long long *)calloc(vocab_size * 2 + 1, sizeof(long long));
-	long long *parent_node = (long long *)calloc(vocab_size * 2 + 1, sizeof(long long));
-	for (a = 0; a < vocab_size; a++) count[a] = vocab[a].cn;
-	for (a = vocab_size; a < vocab_size * 2; a++) count[a] = 1e15;
-	pos1 = vocab_size - 1;
-	pos2 = vocab_size;
-	// Following algorithm constructs the Huffman tree by adding one node at a time
-	for (a = 0; a < vocab_size - 1; a++) {
-		// First, find two smallest nodes 'min1, min2'
-		if (pos1 >= 0) {
-			if (count[pos1] < count[pos2]) {
-				min1i = pos1;
-				pos1--;
-			} else {
-				min1i = pos2;
-				pos2++;
-			}
-		} else {
-			min1i = pos2;
-			pos2++;
-		}
-		if (pos1 >= 0) {
-			if (count[pos1] < count[pos2]) {
-				min2i = pos1;
-				pos1--;
-			} else {
-				min2i = pos2;
-				pos2++;
-			}
-		} else {
-			min2i = pos2;
-			pos2++;
-		}
-		count[vocab_size + a] = count[min1i] + count[min2i];
-		parent_node[min1i] = vocab_size + a;
-		parent_node[min2i] = vocab_size + a;
-		binary[min2i] = 1;
-	}
-	// Now assign binary code to each vocabulary word
-	for (a = 0; a < vocab_size; a++) {
-		b = a;
-		i = 0;
-		while (1) {
-			code[i] = binary[b];
-			point[i] = b;
-			i++;
-			b = parent_node[b];
-			if (b == vocab_size * 2 - 2) break;
-		}
-		vocab[a].codelen = i;
-		vocab[a].point[0] = vocab_size - 2;
-		for (b = 0; b < i; b++) {
-			vocab[a].code[i - b - 1] = code[b];
-			vocab[a].point[i - b] = point[b] - vocab_size;
-		}
-	}
-	free(count);
-	free(binary);
-	free(parent_node);
-}
-
 void LearnVocabFromTrainFile() {
 	char word[MAX_STRING];
 	FILE *fin;
@@ -349,12 +284,6 @@ void InitNet() {
 	a = posix_memalign((void **)&syn0_imag, 128, (long long)vocab_size * layer1_size * sizeof(real));
 	if (syn0_imag == NULL) {printf("Memory allocation failed\n"); exit(1);}
 
-	if (hs) {
-		a = posix_memalign((void **)&syn1, 128, (long long)vocab_size * layer1_size * sizeof(real));
-		if (syn1 == NULL) {printf("Memory allocation failed\n"); exit(1);}
-		for (a = 0; a < vocab_size; a++) for (b = 0; b < layer1_size; b++)
-			syn1[a * layer1_size + b] = 0;
-	}
 	if (negative>0) {
 		a = posix_memalign((void **)&syn1neg_real, 128, (long long)vocab_size * layer1_size * sizeof(real));
 		if (syn1neg_real== NULL) {printf("Memory allocation failed\n"); exit(1);}
@@ -371,250 +300,226 @@ void InitNet() {
 		syn0_real[a * layer1_size + b] = (((next_random & 0xFFFF) / (real)65536) - 0.5) / layer1_size;
 		syn0_imag[a * layer1_size + b] = (((next_random & 0xFFFF) / (real)65536) - 0.5) / layer1_size;
 	}
-	CreateBinaryTree();
 }
 
+
+
+void* BuildNextBatch(long long *batch, long long *a,long long *b,long long *d, long long *word_count, long long *last_word_count, 
+		long long *word, long long *last_word, long long *sentence_length, long long *sentence_position, long long *sen, long long *local_iter,
+		unsigned long long *next_random, clock_t * now, FILE* fi, void* id) {
+
+	long long i = 0, c = 0, target, label;
+
+	while (1) {
+		if (*a == *b) { //Else jumps back to where we were
+
+			if (*word_count - *last_word_count > 10000) {
+				word_count_actual += *word_count - *last_word_count;
+				*last_word_count = *word_count;
+				if ((debug_mode > 1)) {
+					*now=clock();
+					printf("%cAlpha: %f  Progress: %.2f%%  Words/thread/sec: %.2fk  ", 13, alpha,
+							word_count_actual / (real)(iter * train_words + 1) * 100,
+							word_count_actual / ((real)(*now - start + 1) / (real)CLOCKS_PER_SEC * 1000));
+					fflush(stdout);
+				}
+				alpha = starting_alpha * (1 - word_count_actual / (real)(iter * train_words + 1));
+				if (alpha < starting_alpha * 0.0001) alpha = starting_alpha * 0.0001;
+			}
+
+			if (*sentence_length == 0) {
+				while (1) {
+					*word = ReadWordIndex(fi);
+					if (feof(fi)) break;
+					if (*word == -1) continue;
+					(*word_count)++;
+					if (*word == 0) break;
+					// The subsampling randomly discards frequent words while keeping the ranking same
+					if (sample > 0) {
+						real ran = (sqrt(vocab[*word].cn / (sample * train_words)) + 1) * (sample * train_words) / vocab[*word].cn;
+						*next_random = *next_random * (unsigned long long)25214903917 + 11;
+						if (ran < (*next_random & 0xFFFF) / (real)65536) continue;
+					}
+					sen[*sentence_length] = *word;
+					(*sentence_length)++;
+					if (*sentence_length >= MAX_SENTENCE_LENGTH) break;
+				}
+				*sentence_position = 0;
+			}
+
+			if (feof(fi) || (*word_count > train_words / num_threads)) {
+				word_count_actual += *word_count - *last_word_count;
+				(*local_iter)--;
+				*word_count = 0;
+				*last_word_count = 0;
+				*sentence_length = 0;
+				fseek(fi, file_size / (long long)num_threads * (long long)id, SEEK_SET);
+				continue;
+			}
+			*word = sen[*sentence_position];
+			if (*word == -1) continue;
+		}
+
+		//That random 'b' starting point makes the window size not constant, but uniformly distributed in [0,window]
+		//Makes sense, as closer context is probably more linked to target word.
+		//Maybe uniform is not even enough, maybe we should make it geometrically decreasing with the distance to the target word
+		while ( *a < window * 2 + 1 - *b) {
+			if (*a != window) {
+				if (*d == 0){ //Else jumps back where we were
+					c = *sentence_position - window + *a;
+					if (c < 0) { (*a)++; continue; }
+					if (c >= *sentence_length) { (*a)++; continue; }
+					*last_word = sen[c];
+					if (*last_word == -1) { (*a)++; continue; }
+				}
+
+				// NEGATIVE SAMPLING
+				while ( *d < negative + 1) {
+					if (*d == 0) {
+						target = *word;
+						label = 1;
+					} else {
+						*next_random = *next_random * (unsigned long long)25214903917 + 11;
+						target = table[(*next_random >> 16) % table_size];
+						if (target == 0) target = *next_random % (vocab_size - 1) + 1;
+						if (target == *word) { (*d)++; continue; }
+						label = 0;
+					}
+
+					//Storing the batch indexes and the order to consider
+					batch[i*sample_size] = *last_word;
+					batch[i*sample_size+1] = target;
+					batch[i*sample_size+2] = label;
+					if (a < window)	batch[i*sample_size+3] = ((a-b) % 2) * 2 - 1; 
+					if (a > window)	batch[i*sample_size+3] = ((a-b+1) % 2) * 2 - 1; 
+					//batch[i*sample_size+3] = //(*a > window) * 2 - 1; //Sign of the imaginary part
+					
+					(*d)++;
+					i++; if (i == batch_size) return 0;
+				}
+				*d = 0; //Reinit for next loop
+			
+			}
+			(*a)++;
+		}
+		*next_random = *next_random * (unsigned long long)25214903917 + 11;
+		*b = *next_random % window;
+		*a = *b; //Reinit for next loop
+
+
+		(*sentence_position)++;
+		if (*sentence_position >= *sentence_length) {
+			*sentence_length = 0;
+			continue;
+		}
+	}
+}
+
+
 void *TrainModelThread(void *id) {
-	long long a, b, d, cw, word, last_word, sentence_length = 0, sentence_position = 0;
+	long long a, b, d, word, last_word, sentence_length = 0, sentence_position = 0;
 	long long word_count = 0, last_word_count = 0, sen[MAX_SENTENCE_LENGTH + 1];
-	long long l1, l2, c, target, label, local_iter = iter;
+	long long l1, l2, i, c, target, label, local_iter = iter;
 	unsigned long long next_random = (long long)id;
 	real f, g, imag_part_sign, dot_real, dot_imag;
 	clock_t now;
+	
+	long long *batch = (long long *)calloc(sample_size * batch_size, sizeof(long long));
 	real *neu1 = (real *)calloc(layer1_size, sizeof(real));
 	real *neu1e = (real *)calloc(layer1_size, sizeof(real));
 	real *neu1e_real = (real *)calloc(layer1_size, sizeof(real));
 	real *neu1e_imag = (real *)calloc(layer1_size, sizeof(real));
+	
 	FILE *fi = fopen(train_file, "rb");
 	fseek(fi, file_size / (long long)num_threads * (long long)id, SEEK_SET);
+
+	//Init variables for batch generation
+	next_random = next_random * (unsigned long long)25214903917 + 11;
+	b = next_random % window;
+	a = b;
+	d = 0;
+
 	while (1) {
-		if (word_count - last_word_count > 10000) {
-			word_count_actual += word_count - last_word_count;
-			last_word_count = word_count;
-			if ((debug_mode > 1)) {
-				now=clock();
-				printf("%cAlpha: %f  Progress: %.2f%%  Words/thread/sec: %.2fk  ", 13, alpha,
-						word_count_actual / (real)(iter * train_words + 1) * 100,
-						word_count_actual / ((real)(now - start + 1) / (real)CLOCKS_PER_SEC * 1000));
-				fflush(stdout);
-			}
-			alpha = starting_alpha * (1 - word_count_actual / (real)(iter * train_words + 1));
-			if (alpha < starting_alpha * 0.0001) alpha = starting_alpha * 0.0001;
-		}
-		if (sentence_length == 0) {
-			while (1) {
-				word = ReadWordIndex(fi);
-				if (feof(fi)) break;
-				if (word == -1) continue;
-				word_count++;
-				if (word == 0) break;
-				// The subsampling randomly discards frequent words while keeping the ranking same
-				if (sample > 0) {
-					real ran = (sqrt(vocab[word].cn / (sample * train_words)) + 1) * (sample * train_words) / vocab[word].cn;
-					next_random = next_random * (unsigned long long)25214903917 + 11;
-					if (ran < (next_random & 0xFFFF) / (real)65536) continue;
-				}
-				sen[sentence_length] = word;
-				sentence_length++;
-				if (sentence_length >= MAX_SENTENCE_LENGTH) break;
-			}
-			sentence_position = 0;
-		}
-		if (feof(fi) || (word_count > train_words / num_threads)) {
-			word_count_actual += word_count - last_word_count;
-			local_iter--;
-			if (local_iter == 0) break;
-			word_count = 0;
-			last_word_count = 0;
-			sentence_length = 0;
-			fseek(fi, file_size / (long long)num_threads * (long long)id, SEEK_SET);
-			continue;
-		}
-		word = sen[sentence_position];
-		if (word == -1) continue;
-		for (c = 0; c < layer1_size; c++) neu1[c] = 0;
-		for (c = 0; c < layer1_size; c++) neu1e[c] = 0;
+		//Create the next batch
+		BuildNextBatch(batch, &a, &b, &d, &word_count, &last_word_count, &word, &last_word, &sentence_length, &sentence_position, &sen, &local_iter, &next_random, &now, fi, id);
+
+		if (local_iter == 0) break;
+
 		for (c = 0; c < layer1_size; c++) neu1e_real[c] = 0;
 		for (c = 0; c < layer1_size; c++) neu1e_imag[c] = 0;
-		next_random = next_random * (unsigned long long)25214903917 + 11;
-		b = next_random % window;
-		if (cbow) {  //train the cbow architecture
-			// in -> hidden
-			cw = 0;
-			for (a = b; a < window * 2 + 1 - b; a++) if (a != window) {
-				c = sentence_position - window + a;
-				if (c < 0) continue;
-				if (c >= sentence_length) continue;
-				last_word = sen[c];
-				if (last_word == -1) continue;
-				for (c = 0; c < layer1_size; c++) neu1[c] += syn0[c + last_word * layer1_size];
-				cw++;
-			}
-			if (cw) {
-				for (c = 0; c < layer1_size; c++) neu1[c] /= cw;
-				if (hs) for (d = 0; d < vocab[word].codelen; d++) {
-					f = 0;
-					l2 = vocab[word].point[d] * layer1_size;
-					// Propagate hidden -> output
-					for (c = 0; c < layer1_size; c++) f += neu1[c] * syn1[c + l2];
-					if (f <= -MAX_EXP) continue;
-					else if (f >= MAX_EXP) continue;
-					else f = expTable[(int)((f + MAX_EXP) * (EXP_TABLE_SIZE / MAX_EXP / 2))];
-					// 'g' is the gradient multiplied by the learning rate
-					g = (1 - vocab[word].code[d] - f) * alpha;
-					// Propagate errors output -> hidden
-					for (c = 0; c < layer1_size; c++) neu1e[c] += g * syn1[c + l2];
-					// Learn weights hidden -> output
-					for (c = 0; c < layer1_size; c++) syn1[c + l2] += g * neu1[c];
-				}
-				// NEGATIVE SAMPLING
-				if (negative > 0) for (d = 0; d < negative + 1; d++) {
-					if (d == 0) {
-						target = word;
-						label = 1;
-					} else {
-						next_random = next_random * (unsigned long long)25214903917 + 11;
-						target = table[(next_random >> 16) % table_size];
-						if (target == 0) target = next_random % (vocab_size - 1) + 1;
-						if (target == word) continue;
-						label = 0;
-					}
-					l2 = target * layer1_size;
-					f = 0;
-					for (c = 0; c < layer1_size; c++) f += neu1[c] * syn1neg[c + l2];
-					if (f > MAX_EXP) g = (label - 1) * alpha;
-					else if (f < -MAX_EXP) g = (label - 0) * alpha;
-					else g = (label - expTable[(int)((f + MAX_EXP) * (EXP_TABLE_SIZE / MAX_EXP / 2))]) * alpha;
-					for (c = 0; c < layer1_size; c++) neu1e[c] += g * syn1neg[c + l2];
-					for (c = 0; c < layer1_size; c++) syn1neg[c + l2] += g * neu1[c];
-				}
-				// hidden -> in
-				for (a = b; a < window * 2 + 1 - b; a++) if (a != window) {
-					c = sentence_position - window + a;
-					if (c < 0) continue;
-					if (c >= sentence_length) continue;
-					last_word = sen[c];
-					if (last_word == -1) continue;
-					for (c = 0; c < layer1_size; c++) syn0[c + last_word * layer1_size] += neu1e[c];
-				}
-			}
-		} else {  //train skip-gram
-			//That random 'b' starting point makes the window size not constant, but uniformly distributed in [0,window]
-			//Makes sense, as closer context is probably more linked to target word.
-			//Maybe uniform is not even enough, maybe we should make it geometrically decreasing with the distance to the target word
-			for (a = b; a < window * 2 + 1 - b; a++) if (a != window) {
-				c = sentence_position - window + a;
-				if (c < 0) continue;
-				if (c >= sentence_length) continue;
-				last_word = sen[c];
-				if (last_word == -1) continue;
-				l1 = last_word * layer1_size;
-				//Sign of the imaginary part, depending on whether the context word is before or after the target word in the sentence
-				//if (a < window)	imag_part_sign = ((a-b) % 2) * 2 - 1; // (a > window) * 2 - 1;
-				//if (a > window)	imag_part_sign = ((a-b+1) % 2) * 2 - 1; // (a > window) * 2 - 1;
-				imag_part_sign = (a > window) * 2 - 1;
-				
-				for (c = 0; c < layer1_size; c++) neu1e[c] = 0;
-				// HIERARCHICAL SOFTMAX
-				if (hs) for (d = 0; d < vocab[word].codelen; d++) {
-					f = 0;
-					l2 = vocab[word].point[d] * layer1_size; // Propagate hidden -> output 
-					for (c = 0; c < layer1_size; c++) f += syn0[c + l1] * syn1[c + l2]; 
-					if (f <= -MAX_EXP) continue;
-					else if (f >= MAX_EXP) continue;
-					else f = expTable[(int)((f + MAX_EXP) * (EXP_TABLE_SIZE / MAX_EXP / 2))];
-					// 'g' is the gradient multiplied by the learning rate
-					g = (1 - vocab[word].code[d] - f) * alpha;
-					// Propagate errors output -> hidden
-					for (c = 0; c < layer1_size; c++) neu1e[c] += g * syn1[c + l2];
-					// Learn weights hidden -> output
-					for (c = 0; c < layer1_size; c++) syn1[c + l2] += g * syn0[c + l1];
-				}
 
-				// NEGATIVE SAMPLING
-				if (negative > 0) for (d = 0; d < negative + 1; d++) {
-					if (d == 0) {
-						target = word;
-						label = 1;
-					} else {
-						next_random = next_random * (unsigned long long)25214903917 + 11;
-						target = table[(next_random >> 16) % table_size];
-						//TODO: Profiler says that target == 0 test takes 13% of time (!), probably due to branch misprediction, should replace that
-						if (target == 0) target = next_random % (vocab_size - 1) + 1;
-						if (target == word) continue;
-						label = 0;
-					}
+		for (i = 0; i < batch_size; i++) {
+			//train skip-gram
+			last_word = batch[i*sample_size];
+			target = batch[i*sample_size + 1];
+			label = batch[i*sample_size + 2];
+			imag_part_sign = batch[i*sample_size + 3];
 
-					l2 = target * layer1_size;
+			l1 = last_word * layer1_size;
+			l2 = target * layer1_size;
 
-					//Computing score
+			//Computing score
 #if USE_BLAS
-					dot_real = cblas_sdot(layer1_size, syn0_real + l1 , 1, syn1neg_real + l2 , 1);
-					dot_real += cblas_sdot(layer1_size, syn0_imag + l1 , 1, syn1neg_imag + l2 , 1);
-					dot_imag = cblas_sdot(layer1_size, syn0_real + l1 , 1, syn1neg_imag + l2 , 1);
-					dot_imag -= cblas_sdot(layer1_size, syn0_imag + l1 , 1, syn1neg_real + l2 , 1);
+			dot_real = cblas_sdot(layer1_size, syn0_real + l1 , 1, syn1neg_real + l2 , 1);
+			dot_real += cblas_sdot(layer1_size, syn0_imag + l1 , 1, syn1neg_imag + l2 , 1);
+			dot_imag = cblas_sdot(layer1_size, syn0_real + l1 , 1, syn1neg_imag + l2 , 1);
+			dot_imag -= cblas_sdot(layer1_size, syn0_imag + l1 , 1, syn1neg_real + l2 , 1);
 #else 
-					dot_real = 0; dot_imag = 0;
-					for (c = 0; c < layer1_size; c++){
-						dot_real += syn0_real[c + l1] * syn1neg_real[c + l2] + syn0_imag[c + l1] * syn1neg_imag[c + l2];
-						dot_imag += syn0_real[c + l1] * syn1neg_imag[c + l2] - syn0_imag[c + l1] * syn1neg_real[c + l2];
-					}
-#endif
-
-					//Order is taken into account with the sign value in 'imag_part_sign'
-					f = dot_real + imag_part_sign * dot_imag;
-
-					if (f > MAX_EXP) g = (label - 1) * alpha;
-					else if (f < -MAX_EXP) g = (label - 0) * alpha;
-					else g = (label - expTable[(int)((f + MAX_EXP) * (EXP_TABLE_SIZE / MAX_EXP / 2))]) * alpha;
-
-#if 0//USE_BLAS //Slower so set to zero
-
-					//Computing target gradients (use neue1e as tmp vector for vectorization)
-					cblas_scopy(layer1_size, syn1neg_real + l2, 1, neu1e, 1);
-					cblas_saxpy(layer1_size, imag_part_sign, syn1neg_imag + l2, 1, neu1e, 1);
-					cblas_saxpy(layer1_size, g, neu1e, 1, neu1e_real, 1);
-					cblas_scopy(layer1_size, syn1neg_imag + l2, 1, neu1e, 1);
-					cblas_saxpy(layer1_size, -imag_part_sign, syn1neg_real + l2, 1, neu1e, 1);
-					cblas_saxpy(layer1_size, g, neu1e, 1, neu1e_imag, 1);
-					//Computing context gradients
-					cblas_scopy(layer1_size, syn0_real + l1, 1, neu1e, 1);
-					cblas_saxpy(layer1_size, -imag_part_sign, syn0_imag + l1, 1, neu1e, 1);
-					cblas_saxpy(layer1_size, g, neu1e, 1, syn1neg_real + l2, 1);
-					cblas_scopy(layer1_size, syn0_imag + l1, 1, neu1e, 1);
-					cblas_saxpy(layer1_size, imag_part_sign, syn0_real + l1, 1, neu1e, 1);
-					cblas_saxpy(layer1_size, g, neu1e, 1, syn1neg_imag + l2, 1);
-#else 
-					for (c = 0; c < layer1_size; c++){
-						//Computing target gradients
-						neu1e_real[c] += g * ( syn1neg_real[c + l2] + imag_part_sign * syn1neg_imag[c + l2])  ;
-						neu1e_imag[c] += g * ( syn1neg_imag[c + l2] - imag_part_sign * syn1neg_real[c + l2])  ;
-						//Computing context gradients
-						syn1neg_real[c + l2] += g * ( syn0_real[c + l1] - imag_part_sign * syn0_imag[c + l1] ) ;
-						syn1neg_imag[c + l2] += g * ( syn0_imag[c + l1] + imag_part_sign * syn0_real[c + l1] ) ;
-					}
-#endif
-				}
-
-				// Learn weights input -> hidden
-#if 0//USE_BLAS //Slower so set to zero
-
-				cblas_saxpy(layer1_size, 1, neu1e_real, 1, syn0_real + l1, 1);
-				cblas_saxpy(layer1_size, 1, neu1e_imag, 1, syn0_imag + l1, 1);
-#else
-				for (c = 0; c < layer1_size; c++) {
-					syn0_real[c + l1] += neu1e_real[c];
-					syn0_imag[c + l1] += neu1e_imag[c];
-				}
-#endif
+			dot_real = 0; dot_imag = 0;
+			for (c = 0; c < layer1_size; c++){
+				dot_real += syn0_real[c + l1] * syn1neg_real[c + l2] + syn0_imag[c + l1] * syn1neg_imag[c + l2];
+				dot_imag += syn0_real[c + l1] * syn1neg_imag[c + l2] - syn0_imag[c + l1] * syn1neg_real[c + l2];
 			}
+#endif
+			//Order is taken into account with the sign value in 'imag_part_sign'
+			f = dot_real + imag_part_sign * dot_imag;
+
+			if (f > MAX_EXP) g = (label - 1) * alpha;
+			else if (f < -MAX_EXP) g = (label - 0) * alpha;
+			else g = (label - expTable[(int)((f + MAX_EXP) * (EXP_TABLE_SIZE / MAX_EXP / 2))]) * alpha;
+
+#if 0//USE_BLAS //Slower so set to zero
+
+			//Computing word gradients (use neue1e as tmp vector for vectorization)
+			cblas_scopy(layer1_size, syn1neg_real + l2, 1, neu1e, 1);
+			cblas_saxpy(layer1_size, imag_part_sign, syn1neg_imag + l2, 1, neu1e, 1);
+			cblas_saxpy(layer1_size, g, neu1e, 1, neu1e_real, 1);
+			cblas_scopy(layer1_size, syn1neg_imag + l2, 1, neu1e, 1);
+			cblas_saxpy(layer1_size, -imag_part_sign, syn1neg_real + l2, 1, neu1e, 1);
+			cblas_saxpy(layer1_size, g, neu1e, 1, neu1e_imag, 1);
+			//Computing context gradients
+			cblas_scopy(layer1_size, syn0_real + l1, 1, neu1e, 1);
+			cblas_saxpy(layer1_size, -imag_part_sign, syn0_imag + l1, 1, neu1e, 1);
+			cblas_saxpy(layer1_size, g, neu1e, 1, syn1neg_real + l2, 1);
+			cblas_scopy(layer1_size, syn0_imag + l1, 1, neu1e, 1);
+			cblas_saxpy(layer1_size, imag_part_sign, syn0_real + l1, 1, neu1e, 1);
+			cblas_saxpy(layer1_size, g, neu1e, 1, syn1neg_imag + l2, 1);
+#else 
+			for (c = 0; c < layer1_size; c++){
+				//Computing word gradients
+				neu1e_real[c] = g * ( syn1neg_real[c + l2] + imag_part_sign * syn1neg_imag[c + l2])  ;
+				neu1e_imag[c] = g * ( syn1neg_imag[c + l2] - imag_part_sign * syn1neg_real[c + l2])  ;
+				//Computing context gradients
+				syn1neg_real[c + l2] += g * ( syn0_real[c + l1] - imag_part_sign * syn0_imag[c + l1] ) ;
+				syn1neg_imag[c + l2] += g * ( syn0_imag[c + l1] + imag_part_sign * syn0_real[c + l1] ) ;
+				
+				//TEMP: try to update word embeddings at each context
+				syn0_real[c + l1] += neu1e_real[c];
+				syn0_imag[c + l1] += neu1e_imag[c];
+			}
+#endif
 		}
-		sentence_position++;
-		if (sentence_position >= sentence_length) {
-			sentence_length = 0;
-			continue;
-		}
-	//	exit(0);
+		// Learn weights input -> hidden
+#if 0//USE_BLAS //Slower so set to zero
+
+		cblas_saxpy(layer1_size, 1, neu1e_real, 1, syn0_real + l1, 1);
+		cblas_saxpy(layer1_size, 1, neu1e_imag, 1, syn0_imag + l1, 1);
+#else
+		//for (c = 0; c < layer1_size; c++) {
+		//	syn0_real[c + l1] += neu1e_real[c];
+		//	syn0_imag[c + l1] += neu1e_imag[c];
+		//}
+#endif
 	}
 	fclose(fi);
 	free(neu1);
@@ -734,8 +639,6 @@ int main(int argc, char **argv) {
 		printf("\t-sample <float>\n");
 		printf("\t\tSet threshold for occurrence of words. Those that appear with higher frequency in the training data\n");
 		printf("\t\twill be randomly down-sampled; default is 1e-3, useful range is (0, 1e-5)\n");
-		printf("\t-hs <int>\n");
-		printf("\t\tUse Hierarchical Softmax; default is 0 (not used)\n");
 		printf("\t-negative <int>\n");
 		printf("\t\tNumber of negative examples; default is 5, common values are 3 - 10 (0 = not used)\n");
 		printf("\t-threads <int>\n");
@@ -745,7 +648,7 @@ int main(int argc, char **argv) {
 		printf("\t-min-count <int>\n");
 		printf("\t\tThis will discard words that appear less than <int> times; default is 5\n");
 		printf("\t-alpha <float>\n");
-		printf("\t\tSet the starting learning rate; default is 0.025 for skip-gram and 0.05 for CBOW\n");
+		printf("\t\tSet the starting learning rate; default is 0.025 (skip-gram)\n");
 		printf("\t-classes <int>\n");
 		printf("\t\tOutput word classes rather than word vectors; default number of classes is 0 (vectors are written)\n");
 		printf("\t-debug <int>\n");
@@ -756,10 +659,8 @@ int main(int argc, char **argv) {
 		printf("\t\tThe vocabulary will be saved to <file>\n");
 		printf("\t-read-vocab <file>\n");
 		printf("\t\tThe vocabulary will be read from <file>, not constructed from the training data\n");
-		printf("\t-cbow <int>\n");
-		printf("\t\tUse the continuous bag of words model; default is 1 (use 0 for skip-gram model)\n");
 		printf("\nExamples:\n");
-		printf("./word2vec -train data.txt -output vec.txt -size 200 -window 5 -sample 1e-4 -negative 5 -hs 0 -binary 0 -cbow 1 -iter 3\n\n");
+		printf("./word2vec -train data.txt -output vec.txt -size 200 -window 5 -sample 1e-4 -negative 5 -binary 0 -iter 3\n\n");
 		return 0;
 	}
 	output_file[0] = 0;
@@ -771,13 +672,10 @@ int main(int argc, char **argv) {
 	if ((i = ArgPos((char *)"-read-vocab", argc, argv)) > 0) strcpy(read_vocab_file, argv[i + 1]);
 	if ((i = ArgPos((char *)"-debug", argc, argv)) > 0) debug_mode = atoi(argv[i + 1]);
 	if ((i = ArgPos((char *)"-binary", argc, argv)) > 0) binary = atoi(argv[i + 1]);
-	if ((i = ArgPos((char *)"-cbow", argc, argv)) > 0) cbow = atoi(argv[i + 1]);
-	if (cbow) alpha = 0.05;
 	if ((i = ArgPos((char *)"-alpha", argc, argv)) > 0) alpha = atof(argv[i + 1]);
 	if ((i = ArgPos((char *)"-output", argc, argv)) > 0) strcpy(output_file, argv[i + 1]);
 	if ((i = ArgPos((char *)"-window", argc, argv)) > 0) window = atoi(argv[i + 1]);
 	if ((i = ArgPos((char *)"-sample", argc, argv)) > 0) sample = atof(argv[i + 1]);
-	if ((i = ArgPos((char *)"-hs", argc, argv)) > 0) hs = atoi(argv[i + 1]);
 	if ((i = ArgPos((char *)"-negative", argc, argv)) > 0) negative = atoi(argv[i + 1]);
 	if ((i = ArgPos((char *)"-threads", argc, argv)) > 0) num_threads = atoi(argv[i + 1]);
 	if ((i = ArgPos((char *)"-iter", argc, argv)) > 0) iter = atoi(argv[i + 1]);
