@@ -25,7 +25,7 @@
 #define MAX_SENTENCE_LENGTH 1000
 #define MAX_CODE_LENGTH 40
 
-#define USE_BLAS 1
+#define USE_BLAS 0
 
 #if USE_BLAS
 #include "cblas.h"
