@@ -58,6 +58,8 @@ real *expTable, *final_embeddings;
 real *word_real, *word_imag, *ctxt_real, *ctxt_imag, *grad_word_real, *grad_word_imag;
 //Real word2vec model
 real *word_emb, *ctxt_emb, *grad_word_emb;
+//Real left right baseline
+real *word_right, *word_left, *ctxt_right, *ctxt_left, *grad_word_right, *grad_word_left;
 //ENDMOD
 
 int  negative = 5, sign_strat = 0;
@@ -319,14 +321,42 @@ void InitNet() {
 			word_imag[a * layer1_size + b] = (((next_random & 0xFFFF) / (real)65536) - 0.5) / layer1_size;
 		}
 	}
-	if (strcmp(model_type, "complex_asym") == 0) {
+
+	//Real valued baseline
+	if ( StartsWith("real", model_type)){
+
+		a = posix_memalign((void **)&word_right, 128, (long long)vocab_size * layer1_size * sizeof(real));
+		if (word_right== NULL) {printf("Memory allocation failed\n"); exit(1);}
+		a = posix_memalign((void **)&word_left, 128, (long long)vocab_size * layer1_size * sizeof(real));
+		if (word_left == NULL) {printf("Memory allocation failed\n"); exit(1);}
+
+		a = posix_memalign((void **)&ctxt_right, 128, (long long)vocab_size * layer1_size * sizeof(real));
+		if (ctxt_right== NULL) {printf("Memory allocation failed\n"); exit(1);}
+		a = posix_memalign((void **)&ctxt_left, 128, (long long)vocab_size * layer1_size * sizeof(real));
+		if (ctxt_left== NULL) {printf("Memory allocation failed\n"); exit(1);}
+
+		for (a = 0; a < vocab_size; a++) for (b = 0; b < layer1_size; b++){
+			ctxt_right[a * layer1_size + b] = 0;
+			ctxt_left[a * layer1_size + b] = 0;
+		}
+		for (a = 0; a < vocab_size; a++) for (b = 0; b < layer1_size; b++) {
+			next_random = next_random * (unsigned long long)25214903917 + 11;
+			word_right[a * layer1_size + b] = (((next_random & 0xFFFF) / (real)65536) - 0.5) / layer1_size;
+			word_left[a * layer1_size + b] = (((next_random & 0xFFFF) / (real)65536) - 0.5) / layer1_size;
+		}
+	}
+
+	//Setting order strategy type: right/left context or one word every two
+	if (strcmp(model_type, "complex_asym") == 0 || strcmp(model_type, "real_asym") == 0) {
 		sign_strat = 0;
-	} else if (strcmp(model_type, "complex_alt") == 0) {
+		printf("Asymmetry: right/left context\n");
+	} else if (strcmp(model_type, "complex_alt") == 0 || strcmp(model_type, "real_alt") == 0 ){
 		sign_strat = 1;
+		printf("Asymmetry: 1 word every 2\n");
 	}
 
 	//Real original word2vec model
-	if ( strcmp("real", model_type) == 0){
+	if ( strcmp("original_real", model_type) == 0){
 
 		a = posix_memalign((void **)&word_emb, 128, (long long)vocab_size * layer1_size * sizeof(real));
 		if (word_emb== NULL) {printf("Memory allocation failed\n"); exit(1);}
@@ -577,6 +607,139 @@ void *TrainRealModelThread(void *id) {
 	pthread_exit(NULL);
 }
 
+//////////////////////////////////////////////////////////////////////////////////
+// REAL BASELINE LEFT RIGHT MODEL
+//////////////////////////////////////////////////////////////////////////////////
+
+
+void *TrainRealBaselineModelThread(void *id) {
+	//Data processing variables
+	long long a, b, d, word, last_word, sentence_length = 0, sentence_position = 0;
+	long long word_count = 0, last_word_count = 0, sen[MAX_SENTENCE_LENGTH + 1];
+	long long l1, l2, i, c, target, label, local_iter = iter, update_word_embs;
+	unsigned long long next_random = (long long)id;
+	clock_t now;
+	long long *batch = (long long *)calloc(sample_size * batch_size, sizeof(long long));
+	FILE *fi = fopen(train_file, "rb");
+	fseek(fi, file_size / (long long)num_threads * (long long)id, SEEK_SET);
+	//Init variables for batch generation
+	next_random = next_random * (unsigned long long)25214903917 + 11;
+	b = next_random % window;
+	a = b;
+	d = 0;
+
+
+	//TOMOD: Model variables
+	real f, g, order_sign;
+	real *cur_word_emb, *cur_ctxt_emb, *cur_grad_word;
+	real *grad_word_right = (real *)calloc(layer1_size, sizeof(real));
+	real *grad_word_left = (real *)calloc(layer1_size, sizeof(real));
+	//Init gradient accumulators:
+	for (c = 0; c < layer1_size; c++) grad_word_right[c] = 0;
+	for (c = 0; c < layer1_size; c++) grad_word_left[c] = 0;
+	//ENDMOD
+
+
+
+	while (1) {
+		//Create the next batch
+		BuildNextBatch(batch, &a, &b, &d, &word_count, &last_word_count, &word, &last_word, &sentence_length, &sentence_position, sen, &local_iter, &next_random, &now, fi, id);
+
+		if (local_iter == 0) break;
+
+/*
+		for (i = 0; i < batch_size; i++) {
+			last_word = batch[i*sample_size];
+			target = batch[i*sample_size + 1];
+			label = batch[i*sample_size + 2];
+			imag_part_sign = (real) batch[i*sample_size + 3];
+			update_word_embs = batch[i*sample_size + 4];
+			printf("%i\t%i\t%i\t%f\t%i\n",last_word,target,label,imag_part_sign,update_word_embs);
+		}
+		exit(0);
+*/
+
+		for (i = 0; i < batch_size; i++) {
+			//train skip-gram
+			last_word = batch[i*sample_size];
+			target = batch[i*sample_size + 1];
+			label = batch[i*sample_size + 2];
+			order_sign = batch[i*sample_size + 3];
+			update_word_embs = batch[i*sample_size + 4];
+
+			l1 = last_word * layer1_size;
+			l2 = target * layer1_size;
+
+			
+			//TOMOD: Gradient computations and updates
+			if (order_sign == 1){
+				cur_word_emb = word_right + l1;
+				cur_ctxt_emb = ctxt_right + l2;
+				cur_grad_word = grad_word_right; 
+			} else {
+				cur_word_emb = word_left + l1;
+				cur_ctxt_emb = ctxt_left + l2;
+				cur_grad_word = grad_word_left; 
+			}
+
+			//Computing score
+#if USE_BLAS
+			f = cblas_sdot(layer1_size, cur_word_emb, 1, cur_ctxt_emb, 1);
+#else 
+			f = 0;
+			for (c = 0; c < layer1_size; c++){
+				f += cur_word_emb[c] * cur_ctxt_emb[c];
+			}
+#endif
+
+			if (f > MAX_EXP) g = (label - 1) * alpha;
+			else if (f < -MAX_EXP) g = (label - 0) * alpha;
+			else g = (label - expTable[(int)((f + MAX_EXP) * (EXP_TABLE_SIZE / MAX_EXP / 2))]) * alpha;
+
+#if 0//USE_BLAS //Slower so set to zero
+
+			//Computing word gradients (use neue1e as tmp vector for vectorization)
+			cblas_saxpy(layer1_size, g, cur_ctxt_emb, 1, cur_grad_word, 1);
+			//Computing context gradients
+			cblas_saxpy(layer1_size, g, cur_word_emb, 1, cur_ctxt_emb, 1);
+#else 
+			for (c = 0; c < layer1_size; c++){
+				//Computing word gradients
+				cur_grad_word[c] += g * cur_ctxt_emb[c] ;
+				//Computing context gradients & updating embeddings
+				cur_ctxt_emb[c] += g * cur_word_emb[c] ;
+			}
+
+#endif
+			if (update_word_embs == 1){
+#if 0//USE_BLAS //Slower so set to zero
+				cblas_saxpy(layer1_size, 1, grad_word_right, 1, word_right + l1, 1);
+				cblas_saxpy(layer1_size, 1, grad_word_left, 1, word_left + l1, 1);
+				for (c = 0; c < layer1_size; c++) grad_word_right[c] = 0;
+				for (c = 0; c < layer1_size; c++) grad_word_left[c] = 0;
+#else
+				for (c = 0; c < layer1_size; c++){
+					//Updating word embeddings
+					word_right[c + l1] += grad_word_right[c];
+					word_left[c + l1] += grad_word_left[c];
+					//Resetting gradient accumulator
+					grad_word_right[c] = 0;
+					grad_word_left[c] = 0;
+				}
+#endif
+			}
+			//ENDMOD
+		}
+	}
+	fclose(fi);
+	//TOMOD: Free local vectors
+	free(grad_word_right);
+	free(grad_word_left);
+	//ENDMOD
+	pthread_exit(NULL);
+}
+
+
 
 //////////////////////////////////////////////////////////////////////////////////
 // COMPLEX MODEL
@@ -740,7 +903,10 @@ void TrainModel() {
 	if ( StartsWith("complex", model_type)){
 		for (a = 0; a < num_threads; a++) pthread_create(&pt[a], NULL, TrainComplexModelThread, (void *)a);
 		for (a = 0; a < num_threads; a++) pthread_join(pt[a], NULL);
-	} else if (strcmp(model_type, "real") == 0) {
+	} else if ( StartsWith("real", model_type)){
+		for (a = 0; a < num_threads; a++) pthread_create(&pt[a], NULL, TrainRealBaselineModelThread, (void *)a);
+		for (a = 0; a < num_threads; a++) pthread_join(pt[a], NULL);
+	} else if (strcmp(model_type, "original_real") == 0) {
 		for (a = 0; a < num_threads; a++) pthread_create(&pt[a], NULL, TrainRealModelThread, (void *)a);
 		for (a = 0; a < num_threads; a++) pthread_join(pt[a], NULL);
 	}
@@ -768,7 +934,25 @@ void TrainModel() {
 				}
 				fprintf(fo, "\n");
 			}
-		} else if (strcmp(model_type, "real") == 0) {
+		} else if ( StartsWith("real", model_type)){
+			fprintf(fo, "%lld %lld\n", vocab_size, 2*layer1_size); //2 times to concatenate real and imaginary parts
+			for (a = 0; a < vocab_size; a++) {
+				fprintf(fo, "%s ", vocab[a].word);
+				if (binary){
+					for (b = 0; b < layer1_size; b++){
+						fwrite(&word_right[a * layer1_size + b], sizeof(real), 1, fo);
+						fwrite(&word_left[a * layer1_size + b], sizeof(real), 1, fo);
+					}
+				}
+				else {
+					for (b = 0; b < layer1_size; b++) {
+						fprintf(fo, "%lf ", word_right[a * layer1_size + b]);
+						fprintf(fo, "%lf ", word_left[a * layer1_size + b]);
+					}
+				}
+				fprintf(fo, "\n");
+			}
+		} else if (strcmp(model_type, "original_real") == 0) {
 			fprintf(fo, "%lld %lld\n", vocab_size, layer1_size);
 			for (a = 0; a < vocab_size; a++) {
 				fprintf(fo, "%s ", vocab[a].word);
@@ -881,7 +1065,7 @@ int main(int argc, char **argv) {
 		printf("\t-save-vocab <file>\n");
 		printf("\t\tThe vocabulary will be saved to <file>\n");
 		printf("\t-model <name>\n");
-		printf("\t\tThe model to use, possible value are 'complex_asym', 'complex_alt', 'real'\n");
+		printf("\t\tThe model to use, possible value are 'complex_asym', 'complex_alt', 'original_real', 'real_asym', 'real_alt'\n");
 		printf("\t-read-vocab <file>\n");
 		printf("\t\tThe vocabulary will be read from <file>, not constructed from the training data\n");
 		printf("\nExamples:\n");
@@ -910,8 +1094,9 @@ int main(int argc, char **argv) {
 
 	//TOMOD; Add model string id
 	if (! (strcmp(model_type, "complex_alt") == 0 || strcmp(model_type, "complex_asym") == 0
-		|| strcmp(model_type, "real") == 0 )) {
-		printf("Model type '%s' unknown, choices are: 'complex_asym', 'complex_alt'.\n", model_type);
+		|| strcmp(model_type, "real_alt") == 0 || strcmp(model_type, "real_asym") == 0
+		|| strcmp(model_type, "original_real") == 0 )) {
+		printf("Model type '%s' unknown, choices are: 'complex_asym', 'complex_alt', 'original_real', 'real_asym', 'real_alt'.\n", model_type);
 	//ENDMOD
 		exit(1);
 	}
