@@ -515,6 +515,9 @@ void *TrainModelThread(void *id) {
 				imag_part_sign = (a > window) * 2 - 1;
 				
 				for (c = 0; c < layer1_size; c++) neu1e[c] = 0;
+				for (c = 0; c < layer1_size; c++) neu1e_real[c] = 0;
+				for (c = 0; c < layer1_size; c++) neu1e_imag[c] = 0;
+
 				// HIERARCHICAL SOFTMAX
 				if (hs) for (d = 0; d < vocab[word].codelen; d++) {
 					f = 0;

@@ -25,7 +25,7 @@
 #define MAX_SENTENCE_LENGTH 1000
 #define MAX_CODE_LENGTH 40
 
-#define USE_BLAS 0
+#define USE_BLAS 1
 
 #if USE_BLAS
 #include "cblas.h"
@@ -44,7 +44,7 @@ struct vocab_word {
 char train_file[MAX_STRING], output_file[MAX_STRING];
 char save_vocab_file[MAX_STRING], read_vocab_file[MAX_STRING];
 struct vocab_word *vocab;
-int binary = 0,  debug_mode = 2, window = 5, min_count = 5, num_threads = 12, min_reduce = 1, batch_size = 500, sample_size=4;
+int binary = 0,  debug_mode = 2, window = 5, min_count = 5, num_threads = 12, min_reduce = 1, batch_size = 500;
 int *vocab_hash;
 long long vocab_max_size = 1000, vocab_size = 0, layer1_size = 100;
 long long train_words = 0, word_count_actual = 0, iter = 5, file_size = 0, classes = 0;
@@ -53,7 +53,7 @@ real *syn0, *syn0_real, *syn0_imag, *syn1, *syn1neg, *syn1neg_real, *syn1neg_ima
 clock_t start;
 
 int  negative = 5;
-const int table_size = 1e8;
+const int table_size = 1e8, sample_size=5;
 int *table;
 
 void InitUnigramTable() {
@@ -390,9 +390,16 @@ void* BuildNextBatch(long long *batch, long long *a,long long *b,long long *d, l
 					batch[i*sample_size] = *last_word;
 					batch[i*sample_size+1] = target;
 					batch[i*sample_size+2] = label;
-					if (a < window)	batch[i*sample_size+3] = ((a-b) % 2) * 2 - 1; 
-					if (a > window)	batch[i*sample_size+3] = ((a-b+1) % 2) * 2 - 1; 
+					if (*a < window)	batch[i*sample_size+3] = ((*a - *b) % 2) * 2 - 1; 
+					if (*a > window)	batch[i*sample_size+3] = ((*a - *b + 1) % 2) * 2 - 1; 
 					//batch[i*sample_size+3] = //(*a > window) * 2 - 1; //Sign of the imaginary part
+
+					//Controlling word gradient updates:
+					if (*d == negative){
+						batch[i*sample_size+4] = (long long)1;
+					} else {
+						batch[i*sample_size+4] = (long long)0;
+					}
 					
 					(*d)++;
 					i++; if (i == batch_size) return 0;
@@ -416,16 +423,18 @@ void* BuildNextBatch(long long *batch, long long *a,long long *b,long long *d, l
 }
 
 
+
+
+
 void *TrainModelThread(void *id) {
 	long long a, b, d, word, last_word, sentence_length = 0, sentence_position = 0;
 	long long word_count = 0, last_word_count = 0, sen[MAX_SENTENCE_LENGTH + 1];
-	long long l1, l2, i, c, target, label, local_iter = iter;
+	long long l1, l2, i, c, target, label, local_iter = iter, update_word_embs;
 	unsigned long long next_random = (long long)id;
 	real f, g, imag_part_sign, dot_real, dot_imag;
 	clock_t now;
 	
 	long long *batch = (long long *)calloc(sample_size * batch_size, sizeof(long long));
-	real *neu1 = (real *)calloc(layer1_size, sizeof(real));
 	real *neu1e = (real *)calloc(layer1_size, sizeof(real));
 	real *neu1e_real = (real *)calloc(layer1_size, sizeof(real));
 	real *neu1e_imag = (real *)calloc(layer1_size, sizeof(real));
@@ -439,14 +448,27 @@ void *TrainModelThread(void *id) {
 	a = b;
 	d = 0;
 
+	//Init gradient accumulators:
+	for (c = 0; c < layer1_size; c++) neu1e_real[c] = 0;
+	for (c = 0; c < layer1_size; c++) neu1e_imag[c] = 0;
+
 	while (1) {
 		//Create the next batch
 		BuildNextBatch(batch, &a, &b, &d, &word_count, &last_word_count, &word, &last_word, &sentence_length, &sentence_position, &sen, &local_iter, &next_random, &now, fi, id);
 
 		if (local_iter == 0) break;
 
-		for (c = 0; c < layer1_size; c++) neu1e_real[c] = 0;
-		for (c = 0; c < layer1_size; c++) neu1e_imag[c] = 0;
+/*
+		for (i = 0; i < batch_size; i++) {
+			last_word = batch[i*sample_size];
+			target = batch[i*sample_size + 1];
+			label = batch[i*sample_size + 2];
+			imag_part_sign = (real) batch[i*sample_size + 3];
+			update_word_embs = batch[i*sample_size + 4];
+			printf("%i\t%i\t%i\t%f\t%i\n",last_word,target,label,imag_part_sign,update_word_embs);
+		}
+		exit(0);
+*/
 
 		for (i = 0; i < batch_size; i++) {
 			//train skip-gram
@@ -454,6 +476,7 @@ void *TrainModelThread(void *id) {
 			target = batch[i*sample_size + 1];
 			label = batch[i*sample_size + 2];
 			imag_part_sign = batch[i*sample_size + 3];
+			update_word_embs = batch[i*sample_size + 4];
 
 			l1 = last_word * layer1_size;
 			l2 = target * layer1_size;
@@ -497,32 +520,36 @@ void *TrainModelThread(void *id) {
 #else 
 			for (c = 0; c < layer1_size; c++){
 				//Computing word gradients
-				neu1e_real[c] = g * ( syn1neg_real[c + l2] + imag_part_sign * syn1neg_imag[c + l2])  ;
-				neu1e_imag[c] = g * ( syn1neg_imag[c + l2] - imag_part_sign * syn1neg_real[c + l2])  ;
-				//Computing context gradients
+				neu1e_real[c] += g * ( syn1neg_real[c + l2] + imag_part_sign * syn1neg_imag[c + l2])  ;
+				neu1e_imag[c] += g * ( syn1neg_imag[c + l2] - imag_part_sign * syn1neg_real[c + l2])  ;
+				//Computing context gradients & updating embeddings
 				syn1neg_real[c + l2] += g * ( syn0_real[c + l1] - imag_part_sign * syn0_imag[c + l1] ) ;
 				syn1neg_imag[c + l2] += g * ( syn0_imag[c + l1] + imag_part_sign * syn0_real[c + l1] ) ;
 				
-				//TEMP: try to update word embeddings at each context
-				syn0_real[c + l1] += neu1e_real[c];
-				syn0_imag[c + l1] += neu1e_imag[c];
 			}
+
 #endif
-		}
-		// Learn weights input -> hidden
+			if (update_word_embs == 1){
 #if 0//USE_BLAS //Slower so set to zero
 
-		cblas_saxpy(layer1_size, 1, neu1e_real, 1, syn0_real + l1, 1);
-		cblas_saxpy(layer1_size, 1, neu1e_imag, 1, syn0_imag + l1, 1);
+				cblas_saxpy(layer1_size, 1, neu1e_real, 1, syn0_real + l1, 1);
+				cblas_saxpy(layer1_size, 1, neu1e_imag, 1, syn0_imag + l1, 1);
+				for (c = 0; c < layer1_size; c++) neu1e_real[c] = 0;
+				for (c = 0; c < layer1_size; c++) neu1e_imag[c] = 0;
 #else
-		//for (c = 0; c < layer1_size; c++) {
-		//	syn0_real[c + l1] += neu1e_real[c];
-		//	syn0_imag[c + l1] += neu1e_imag[c];
-		//}
+				for (c = 0; c < layer1_size; c++){
+					//Updating word embeddings
+					syn0_real[c + l1] += neu1e_real[c];
+					syn0_imag[c + l1] += neu1e_imag[c];
+					//Resetting gradient accumulator
+					neu1e_real[c] = 0;
+					neu1e_imag[c] = 0;
+				}
 #endif
+			}
+		}
 	}
 	fclose(fi);
-	free(neu1);
 	free(neu1e);
 	free(neu1e_real);
 	free(neu1e_imag);
