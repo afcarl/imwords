@@ -57,13 +57,14 @@ real *expTable, *final_embeddings;
 //Complex word2vec model
 real *word_real, *word_imag, *ctxt_real, *ctxt_imag, *grad_word_real, *grad_word_imag;
 //Real word2vec model
-real *word_emb, *ctxt_emb, *grad_word_emb;
+real *word_emb, *ctxt_emb, *grad_word_emb, *word_grad_acc, *ctxt_grad_acc;
 //Real left right baseline
 real *word_right, *word_left, *ctxt_right, *ctxt_left, *grad_word_right, *grad_word_left;
 //ENDMOD
 
-int  negative = 5, sign_strat = 0;
+int  negative = 5, sign_strat = 0, adagrad = 0;
 const int table_size = 1e8, sample_size=5;
+const real adagrad_reg = 1e-8;
 int *table;
 
 
@@ -364,6 +365,13 @@ void InitNet() {
 		a = posix_memalign((void **)&ctxt_emb, 128, (long long)vocab_size * layer1_size * sizeof(real));
 		if (ctxt_emb== NULL) {printf("Memory allocation failed\n"); exit(1);}
 
+		if (adagrad) {
+			a = posix_memalign((void **)&word_grad_acc, 128, (long long)vocab_size * layer1_size * sizeof(real));
+			if (word_grad_acc== NULL) {printf("Memory allocation failed\n"); exit(1);}
+			a = posix_memalign((void **)&ctxt_grad_acc, 128, (long long)vocab_size * layer1_size * sizeof(real));
+			if (ctxt_grad_acc== NULL) {printf("Memory allocation failed\n"); exit(1);}
+		}
+
 		for (a = 0; a < vocab_size; a++) for (b = 0; b < layer1_size; b++){
 			ctxt_emb[a * layer1_size + b] = 0;
 		}
@@ -397,7 +405,7 @@ void* BuildNextBatch(long long *batch, long long *a,long long *b,long long *d, l
 							word_count_actual / ((real)(*now - start + 1) / (real)CLOCKS_PER_SEC * 1000));
 					fflush(stdout);
 				}
-				alpha = starting_alpha * (1 - word_count_actual / (real)(iter * train_words + 1));
+				if (!adagrad) alpha = starting_alpha * (1 - word_count_actual / (real)(iter * train_words + 1));
 				if (alpha < starting_alpha * 0.0001) alpha = starting_alpha * 0.0001;
 			}
 
@@ -528,7 +536,7 @@ void *TrainRealModelThread(void *id) {
 
 
 	//TOMOD: Model variables
-	real f, g;
+	real f, g, tmp_grad;
 	real *grad_word_emb = (real *)calloc(layer1_size, sizeof(real));
 	//Init gradient accumulators:
 	for (c = 0; c < layer1_size; c++) grad_word_emb[c] = 0;
@@ -567,7 +575,7 @@ void *TrainRealModelThread(void *id) {
 
 			if (f > MAX_EXP) g = (label - 1) * alpha;
 			else if (f < -MAX_EXP) g = (label - 0) * alpha;
-			else g = (label - expTable[(int)((f + MAX_EXP) * (EXP_TABLE_SIZE / MAX_EXP / 2))]) * alpha;
+			else g = (label - expTable[(int)((f + MAX_EXP) * (EXP_TABLE_SIZE / MAX_EXP / 2))]);
 
 #if 0//USE_BLAS //Slower so set to zero
 
@@ -576,11 +584,25 @@ void *TrainRealModelThread(void *id) {
 			//Computing context gradients
 			cblas_saxpy(layer1_size, g, word_emb + l1, 1, ctxt_emb + l2, 1);
 #else 
-			for (c = 0; c < layer1_size; c++){
-				//Computing word gradients
-				grad_word_emb[c] += g * ctxt_emb[c + l2] ;
-				//Computing context gradients & updating embeddings
-				ctxt_emb[c + l2] += g * word_emb[c + l1] ;
+			if ( adagrad ) {
+				for (c = 0; c < layer1_size; c++){
+					//Computing word gradients
+					tmp_grad = g * ctxt_emb[c + l2] ;
+					word_grad_acc[c] += tmp_grad * tmp_grad;
+					grad_word_emb[c] += (alpha / (sqrt( word_grad_acc[c]) + adagrad_reg)) * tmp_grad;
+					//Computing context gradients & updating embeddings
+					tmp_grad = g * word_emb[c + l1];
+					ctxt_grad_acc[c] += tmp_grad * tmp_grad;
+					ctxt_emb[c + l2] += (alpha / (sqrt( ctxt_grad_acc[c]) + adagrad_reg)) * tmp_grad;
+				}
+			} else {
+				g *= alpha;
+				for (c = 0; c < layer1_size; c++){
+					//Computing word gradients
+					grad_word_emb[c] += g * ctxt_emb[c + l2] ;
+					//Computing context gradients & updating embeddings
+					ctxt_emb[c + l2] += g * word_emb[c + l1] ;
+				}
 			}
 
 #endif
@@ -1066,6 +1088,8 @@ int main(int argc, char **argv) {
 		printf("\t\tThe vocabulary will be saved to <file>\n");
 		printf("\t-model <name>\n");
 		printf("\t\tThe model to use, possible value are 'complex_asym', 'complex_alt', 'original_real', 'real_asym', 'real_alt'\n");
+		printf("\t-adagrad <int>\n");
+		printf("\t\tActivates adagrad learning step if non-zero. Only for the 'original_real' model for the moment.\n");
 		printf("\t-read-vocab <file>\n");
 		printf("\t\tThe vocabulary will be read from <file>, not constructed from the training data\n");
 		printf("\nExamples:\n");
@@ -1091,6 +1115,7 @@ int main(int argc, char **argv) {
 	if ((i = ArgPos((char *)"-min-count", argc, argv)) > 0) min_count = atoi(argv[i + 1]);
 	if ((i = ArgPos((char *)"-classes", argc, argv)) > 0) classes = atoi(argv[i + 1]);
 	if ((i = ArgPos((char *)"-model", argc, argv)) > 0) strcpy(model_type, argv[i + 1]);
+	if ((i = ArgPos((char *)"-adagrad", argc, argv)) > 0) adagrad = atoi(argv[i + 1]);
 
 	//TOMOD; Add model string id
 	if (! (strcmp(model_type, "complex_alt") == 0 || strcmp(model_type, "complex_asym") == 0
