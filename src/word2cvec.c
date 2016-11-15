@@ -26,7 +26,7 @@
 #define MAX_SENTENCE_LENGTH 1000
 #define MAX_CODE_LENGTH 40
 
-#define USE_BLAS 0
+#define USE_BLAS 1
 
 
 const int vocab_hash_size = 30000000;  // Maximum 30 * 0.7 = 21M words in the vocabulary
@@ -510,9 +510,9 @@ void *TrainModelThread(void *id) {
 				if (last_word == -1) continue;
 				l1 = last_word * layer1_size;
 				//Sign of the imaginary part, depending on whether the context word is before or after the target word in the sentence
-				//if (a < window)	imag_part_sign = ((a-b) % 2) * 2 - 1; // (a > window) * 2 - 1;
-				//if (a > window)	imag_part_sign = ((a-b+1) % 2) * 2 - 1; // (a > window) * 2 - 1;
-				imag_part_sign = (a > window) * 2 - 1;
+				if (a < window)	imag_part_sign = ((a-b) % 2) * 2 - 1; // (a > window) * 2 - 1;
+				if (a > window)	imag_part_sign = ((a-b+1) % 2) * 2 - 1; // (a > window) * 2 - 1;
+				//imag_part_sign = (a > window) * 2 - 1;
 				
 				for (c = 0; c < layer1_size; c++) neu1e[c] = 0;
 				for (c = 0; c < layer1_size; c++) neu1e_real[c] = 0;
