@@ -41,7 +41,7 @@ struct vocab_word {
 	char *word, *code, codelen;
 };
 
-char train_file[MAX_STRING], output_file[MAX_STRING];
+char train_file[MAX_STRING], output_file[MAX_STRING], eval_file[MAX_STRING] = "";
 char save_vocab_file[MAX_STRING], read_vocab_file[MAX_STRING];
 char model_type[MAX_STRING];
 struct vocab_word *vocab;
@@ -52,6 +52,10 @@ long long train_words = 0, word_count_actual = 0, iter = 5, file_size = 0, class
 real alpha = 0.025, starting_alpha, sample = 1e-3;
 clock_t start;
 real *expTable, *final_embeddings;
+
+//For evaluation
+long long * analogy_eval_arr;
+int nb_analogy_questions = 0;
 
 //TOMOD: Declare model parameters here
 //Complex word2vec model
@@ -293,6 +297,119 @@ void ReadVocab() {
 	fclose(fin);
 }
 
+
+void BuildAnalogyEvaluation() {
+	FILE *f;
+	char st1[MAX_STRING];
+	int arr_size = 10000, nb_ignored = 0;
+	long long w1_ind, w2_ind, w3_ind, w4_ind;
+
+	long long * tmp;
+	analogy_eval_arr = (long long *)malloc(4 * arr_size * sizeof(long long));
+
+
+	f = fopen(eval_file, "rb");
+	
+	while (1) {
+		ReadWord(st1,f);
+		if (feof(f)) break;
+
+		if (! strcmp(st1,":")) {
+			ReadWord(st1,f);//Pass the category description
+			ReadWord(st1,f); //Line feed
+			ReadWord(st1,f); //First word
+		}
+		//Get all word indexes
+		w1_ind = SearchVocab(st1);
+		w2_ind = ReadWordIndex(f);
+		w3_ind = ReadWordIndex(f);
+		w4_ind = ReadWordIndex(f);
+		ReadWord(st1,f); //Line feed
+
+		//If one is not found, the anaology question is ignored
+		if ( w1_ind == -1 || w2_ind == -1 || w3_ind == -1 || w4_ind == -1 ){
+			nb_ignored++;
+			continue;
+		}
+
+		analogy_eval_arr[nb_analogy_questions * 4] = w1_ind;
+		analogy_eval_arr[nb_analogy_questions * 4 + 1] = w2_ind;
+		analogy_eval_arr[nb_analogy_questions * 4 + 2] = w3_ind;
+		analogy_eval_arr[nb_analogy_questions * 4 + 3] = w4_ind;
+		nb_analogy_questions++;
+
+		if ( nb_analogy_questions >= arr_size) { //Reallocate a twice bigger array
+			arr_size *= 2;
+			tmp  = (long long *)malloc(arr_size * sizeof(long long));
+			memcpy(tmp, analogy_eval_arr, (arr_size / 2) * sizeof(long long));
+			free(analogy_eval_arr);
+			analogy_eval_arr = tmp;
+		}
+	}
+	fclose(f);
+	printf("%i/%i analogy questions loaded\n",nb_analogy_questions, nb_ignored + nb_analogy_questions); 
+}
+
+
+void EvalSingleEmbModel( real *embeddings) {
+
+	long long i, j, c, argmax;
+	int nb_correct = 0;
+	real *emb_copy = (real*) malloc((long long)vocab_size * layer1_size * sizeof(real));
+	real *pred_emb = (real*) malloc(layer1_size * sizeof(long long));
+	real norm, dot, max;
+
+
+	//Copying current embeddings (with all concurrent read/write risk implied)
+	memcpy(emb_copy, embeddings, (long long)vocab_size * layer1_size * sizeof(real));
+
+	//Normalize embeddings
+	for (i = 0; i < vocab_size; i ++) {
+		norm = 0;
+		for (c = 0; c < layer1_size; c++) {
+			norm += emb_copy[i * layer1_size + c] * emb_copy[i * layer1_size + c];
+		}
+		norm = sqrt(norm);
+		for (c = 0; c < layer1_size; c++) {
+			emb_copy[i * layer1_size + c] /= norm;
+		}
+	}
+
+	//Iterate over analogy questions
+	for (i = 0; i < nb_analogy_questions; i++ ) {
+		//Compute the predicted vector
+		for (c = 0; c < layer1_size; c++) {
+			pred_emb[c] = - emb_copy[ analogy_eval_arr[i * 4] * layer1_size + c ] 
+						+ emb_copy[ analogy_eval_arr[i * 4 + 1] * layer1_size + c ]
+						+ emb_copy[ analogy_eval_arr[i * 4 + 2] * layer1_size + c ] ;
+		}
+
+		//Find the closest in the vocabulary, TODO: BLAS matrix-vector product should help here
+		max = 1.175494e-38;
+		argmax = 0;
+		for (j = 0; j < vocab_size; j++) {
+			dot = 0;
+			for (c = 0; c < layer1_size; c++) {
+				dot += pred_emb[c] * emb_copy[j * layer1_size + c];
+			}
+			if (dot > max){
+				max = dot;
+				argmax = j;
+			}
+		}
+		//If the closest word is the right one
+		if (argmax == analogy_eval_arr[i * 4 + 3]){
+			nb_correct++;
+		}
+	}
+	printf("Accuracy over the %i analogy questions: %f%%\n",nb_analogy_questions, (float)(nb_correct)/ (float)(nb_analogy_questions) * 100.0);
+
+	free(emb_copy);
+	free(pred_emb);
+
+}
+
+
 void InitNet() {
 	long long a, b;
 	unsigned long long next_random = 1;
@@ -436,6 +553,10 @@ void* BuildNextBatch(long long *batch, long long *a,long long *b,long long *d, l
 				*last_word_count = 0;
 				*sentence_length = 0;
 				fseek(fi, file_size / (long long)num_threads * (long long)id, SEEK_SET);
+				//Run evaluation at each epoch for one thread only
+				if (id == 0 && !strcmp(model_type, "original_real") && strlen(eval_file) > 0) {
+					EvalSingleEmbModel(word_emb);
+				}
 				continue;
 			}
 			*word = sen[*sentence_position];
@@ -918,6 +1039,7 @@ void TrainModel() {
 	if (read_vocab_file[0] != 0) ReadVocab(); else LearnVocabFromTrainFile();
 	if (save_vocab_file[0] != 0) SaveVocab();
 	if (output_file[0] == 0) return;
+	if (strlen(eval_file) > 0) BuildAnalogyEvaluation();
 	InitNet();
 	if (negative > 0) InitUnigramTable();
 	start = clock();
@@ -1061,6 +1183,8 @@ int main(int argc, char **argv) {
 		printf("\t\tUse text data from <file> to train the model\n");
 		printf("\t-output <file>\n");
 		printf("\t\tUse <file> to save the resulting word vectors / word clusters\n");
+		printf("\t-eval <file>\n");
+		printf("\t\tUse the analogy questions from <file> to produce evaluation every epoch\n");
 		printf("\t-size <int>\n");
 		printf("\t\tSet size of word vectors; default is 100\n");
 		printf("\t-window <int>\n");
@@ -1101,6 +1225,7 @@ int main(int argc, char **argv) {
 	read_vocab_file[0] = 0;
 	if ((i = ArgPos((char *)"-size", argc, argv)) > 0) layer1_size = atoi(argv[i + 1]);
 	if ((i = ArgPos((char *)"-train", argc, argv)) > 0) strcpy(train_file, argv[i + 1]);
+	if ((i = ArgPos((char *)"-eval", argc, argv)) > 0) strcpy(eval_file, argv[i + 1]);
 	if ((i = ArgPos((char *)"-save-vocab", argc, argv)) > 0) strcpy(save_vocab_file, argv[i + 1]);
 	if ((i = ArgPos((char *)"-read-vocab", argc, argv)) > 0) strcpy(read_vocab_file, argv[i + 1]);
 	if ((i = ArgPos((char *)"-debug", argc, argv)) > 0) debug_mode = atoi(argv[i + 1]);
