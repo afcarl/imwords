@@ -672,12 +672,6 @@ void *TrainRealModelThread(void *id) {
 	real *grad_word_emb = (real *)calloc(layer1_size, sizeof(real));
 	//Init gradient accumulators:
 	for (c = 0; c < layer1_size; c++) grad_word_emb[c] = 0;
-
-	//If we're using unique embeddings for word/context, simply redirect the ctxt pointer:
-	if ( strcmp(model_type, "real_unique") == 0 ){
-		free(ctxt_emb);
-		ctxt_emb = word_emb;
-	}	
 	//ENDMOD
 
 	while (1) {
@@ -797,13 +791,6 @@ void *TrainRealBaselineModelThread(void *id) {
 	//Init gradient accumulators:
 	for (c = 0; c < layer1_size; c++) grad_word_right[c] = 0;
 	for (c = 0; c < layer1_size; c++) grad_word_left[c] = 0;
-	//If we're using unique embeddings for word/context, simply redirect the ctxt pointer:
-	if ( strcmp(model_type, "2real_unique_asym") == 0 || strcmp(model_type, "2real_unique_alt") == 0 ){
-		free(ctxt_right);
-		free(ctxt_left);
-		ctxt_right = word_right;
-		ctxt_left = word_left;
-	}	
 	//ENDMOD
 
 
@@ -938,13 +925,6 @@ void *TrainComplexModelThread(void *id) {
 	//Init gradient accumulators:
 	for (c = 0; c < layer1_size; c++) grad_word_real[c] = 0;
 	for (c = 0; c < layer1_size; c++) grad_word_imag[c] = 0;
-	//If we're using unique embeddings for word/context, simply redirect the ctxt pointer:
-	if ( strcmp(model_type, "complex_unique_asym") == 0 || strcmp(model_type, "complex_unique_alt") == 0 ){
-		free(ctxt_real);
-		free(ctxt_imag);
-		ctxt_real = word_real;
-		ctxt_imag = word_imag;
-	}	
 	//ENDMOD
 
 
@@ -1074,7 +1054,24 @@ void TrainModel() {
 	InitNet();
 	if (negative > 0) InitUnigramTable();
 	start = clock();
+
 	//TOMOD: Starts threads on the corresponding model function
+	//If we're using unique embeddings for word/context, simply redirect the ctxt pointer:
+	if ( strcmp(model_type, "real_unique") == 0 ){
+		free(ctxt_emb);
+		ctxt_emb = word_emb;
+	} else if ( strcmp(model_type, "complex_unique_asym") == 0 || strcmp(model_type, "complex_unique_alt") == 0 ){
+		free(ctxt_real);
+		free(ctxt_imag);
+		ctxt_real = word_real;
+		ctxt_imag = word_imag;
+	} else if ( strcmp(model_type, "2real_unique_asym") == 0 || strcmp(model_type, "2real_unique_alt") == 0 ){
+		free(ctxt_right);
+		free(ctxt_left);
+		ctxt_right = word_right;
+		ctxt_left = word_left;
+	}	
+
 	if ( StartsWith("complex", model_type)){
 		for (a = 0; a < num_threads; a++) pthread_create(&pt[a], NULL, TrainComplexModelThread, (void *)a);
 		for (a = 0; a < num_threads; a++) pthread_join(pt[a], NULL);
