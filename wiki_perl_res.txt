@@ -1,0 +1,20 @@
+./word2cvec_clean -train /opt/scratch/MLS/ttrouill/wiki.en_perlextract.txt -cbow 0 -window 5 -negative 5 -hs 0 -sample 1e-5 -threads 32 -binary 1 -iter 15
+
+original_real 300:
+Total accuracy: 71.70 %   Semantic accuracy: 78.84 %   Syntactic accuracy: 65.78 %
+
+original_real 600:
+
+
+complex_asym 300:
+Total accuracy: 73.06 %   Semantic accuracy: 79.95 %   Syntactic accuracy: 67.33 % 
+
+complex_alt 300:
+
+
+2real_asym 300:
+Total accuracy: 72.72 %   Semantic accuracy: 79.22 %   Syntactic accuracy: 67.33 % 
+
+2real_alt 300:
+Total accuracy: 71.24 %   Semantic accuracy: 78.44 %   Syntactic accuracy: 65.26 % 
+

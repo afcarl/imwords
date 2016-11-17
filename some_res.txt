@@ -1,0 +1,37 @@
+skip-gram word2vec: /word2vec -train text8 -output vectors.bin -cbow 0  -window 8 -negative 25 -hs 0 -sample 1e-4 -threads 20 -binary 1 -iter 15 -alpha 0.025
+
+Real:
+k=100: 39.58
+k=200: 40.19
+k=400: 34.38
+
+
+Complex right-left:
+k=100: shit
+k=200: like 30
+
+Complex alternating:
+k=200: Total accuracy: 38.53 %   Semantic accuracy: 56.19 %   Syntactic accuracy: 25.94 % 
+
+Complex alternating mirror:
+k=200: Total accuracy: 36.07 %   Semantic accuracy: 51.31 %   Syntactic accuracy: 25.21 %
+
+
+################################
+skip-gram word2vec: /word2vec -train text8 -output vectors.bin -cbow 0  -window 5 -negative 25 -hs 0 -sample 1e-3 -threads 8 -binary 1 -iter 50 -alpha 0.025
+
+Real:
+mikholov k=200, 102min on spider: Total accuracy: 41.63 %   Semantic accuracy: 47.88 %   Syntactic accuracy: 37.18 % 
+tensorflow k=200, 104min on spider:  39.7%
+mikholov k=400, 191min on spider: Total accuracy: 37.86 %   Semantic accuracy: 43.37 %   Syntactic accuracy: 33.94 %
+tensorflow k=400, 204min on spider:  36.0%
+
+
+Complex alternating:
+mikholov k=200, 224m on spider: Total accuracy: 44.33 %   Semantic accuracy: 57.55 %   Syntactic accuracy: 34.91 % 
+tensorflow k=200, 395min on spider:  40.5%
+
+
+Complex right-left:
+mikholov k=200, 267m on spider: Total accuracy: 30.30 %   Semantic accuracy: 39.81 %   Syntactic accuracy: 23.53 %
+
