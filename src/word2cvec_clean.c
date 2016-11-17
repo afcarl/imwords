@@ -76,6 +76,17 @@ int StartsWith(const char *pre, const char *str) {
 	return strncmp(pre, str, strlen(pre)) == 0;
 }
 
+int EndsWith(const char *suffix, const char *str)
+{
+	if (!str || !suffix)
+		return 0;
+	size_t lenstr = strlen(str);
+	size_t lensuffix = strlen(suffix);
+	if (lensuffix >  lenstr)
+		return 0;
+	return strncmp(str + lenstr - lensuffix, suffix, lensuffix) == 0;
+}
+
 
 
 void InitUnigramTable() {
@@ -465,10 +476,10 @@ void InitNet() {
 	}
 
 	//Setting order strategy type: right/left context or one word every two
-	if (strcmp(model_type, "complex_asym") == 0 || strcmp(model_type, "2real_asym") == 0) {
+	if (EndsWith("asym",model_type)) {
 		sign_strat = 0;
 		printf("Asymmetry: right/left context\n");
-	} else if (strcmp(model_type, "complex_alt") == 0 || strcmp(model_type, "2real_alt") == 0 ){
+	} else if (EndsWith("alt",model_type) ){
 		sign_strat = 1;
 		printf("Asymmetry: 1 word every 2\n");
 	}
@@ -786,6 +797,13 @@ void *TrainRealBaselineModelThread(void *id) {
 	//Init gradient accumulators:
 	for (c = 0; c < layer1_size; c++) grad_word_right[c] = 0;
 	for (c = 0; c < layer1_size; c++) grad_word_left[c] = 0;
+	//If we're using unique embeddings for word/context, simply redirect the ctxt pointer:
+	if ( strcmp(model_type, "2real_unique_asym") == 0 || strcmp(model_type, "2real_unique_alt") == 0 ){
+		free(ctxt_right);
+		free(ctxt_left);
+		ctxt_right = word_right;
+		ctxt_left = word_left;
+	}	
 	//ENDMOD
 
 
@@ -920,6 +938,13 @@ void *TrainComplexModelThread(void *id) {
 	//Init gradient accumulators:
 	for (c = 0; c < layer1_size; c++) grad_word_real[c] = 0;
 	for (c = 0; c < layer1_size; c++) grad_word_imag[c] = 0;
+	//If we're using unique embeddings for word/context, simply redirect the ctxt pointer:
+	if ( strcmp(model_type, "complex_unique_asym") == 0 || strcmp(model_type, "complex_unique_alt") == 0 ){
+		free(ctxt_real);
+		free(ctxt_imag);
+		ctxt_real = word_real;
+		ctxt_imag = word_imag;
+	}	
 	//ENDMOD
 
 
@@ -1217,7 +1242,7 @@ int main(int argc, char **argv) {
 		printf("\t-save-vocab <file>\n");
 		printf("\t\tThe vocabulary will be saved to <file>\n");
 		printf("\t-model <name>\n");
-		printf("\t\tThe model to use, possible value are 'complex_asym', 'complex_alt', 'real_original', 'real_unique', '2real_asym', '2real_alt'\n");
+		printf("\t\tThe model to use, possible value are 'complex_asym', 'complex_alt', 'complex_unique_asym', 'complex_unique_alt', 'real_original', 'real_unique', '2real_asym', '2real_alt', '2real_unique_asym', '2real_unique_alt'\n");
 		printf("\t-adagrad <int>\n");
 		printf("\t\tActivates adagrad learning step if non-zero. Only for the 'real_original' model for the moment.\n");
 		printf("\t-read-vocab <file>\n");
@@ -1250,10 +1275,12 @@ int main(int argc, char **argv) {
 
 	//TOMOD; Add model string id
 	if (! (strcmp(model_type, "complex_alt") == 0 || strcmp(model_type, "complex_asym") == 0
+		|| strcmp(model_type, "complex_unique_alt") == 0 || strcmp(model_type, "complex_unique_asym") == 0
+		|| strcmp(model_type, "2real_unique_alt") == 0 || strcmp(model_type, "2real_unique_asym") == 0
 		|| strcmp(model_type, "2real_alt") == 0 || strcmp(model_type, "2real_asym") == 0
 		|| strcmp(model_type, "real_unique") == 0 || strcmp(model_type, "real_unique") == 0
 		|| strcmp(model_type, "real_original") == 0 )) {
-		printf("Model type '%s' unknown, choices are: 'complex_asym', 'complex_alt', 'complex_symm', 'real_original', '2real_asym', '2real_alt', 'real_unique'.\n", model_type);
+		printf("Model type '%s' unknown, choices are: 'complex_asym', 'complex_alt', 'complex_unique_asym', 'complex_unique_alt', 'real_original', 'real_unique', '2real_asym', '2real_alt','2real_unique_asym', '2real_unique_alt'.\n", model_type);
 	//ENDMOD
 		exit(1);
 	}
