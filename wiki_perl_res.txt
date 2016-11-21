@@ -6,6 +6,7 @@ Total accuracy: 71.70 %   Semantic accuracy: 78.84 %   Syntactic accuracy: 65.78
 original_real 600:
 Total accuracy: 73.01 %   Semantic accuracy: 81.20 %   Syntactic accuracy: 66.21 %
 
+
 complex_asym 300:
 Total accuracy: 73.06 %   Semantic accuracy: 79.95 %   Syntactic accuracy: 67.33 % 
 
@@ -20,13 +21,13 @@ Total accuracy: 71.24 %   Semantic accuracy: 78.44 %   Syntactic accuracy: 65.26
 
 
 complex_unique_asym 300:
-
+Total accuracy: 61.06 %   Semantic accuracy: 68.23 %   Syntactic accuracy: 55.11 %
 
 2real_unique_asym 300:
-
+Total accuracy: 59.55 %   Semantic accuracy: 67.70 %   Syntactic accuracy: 52.79 %
 
 real_unique 300:
 Total accuracy: 59.49 %   Semantic accuracy: 67.20 %   Syntactic accuracy: 53.08 % 
 
-
 real_unique 600:
+Total accuracy: 63.65 %   Semantic accuracy: 73.53 %   Syntactic accuracy: 55.44 %
