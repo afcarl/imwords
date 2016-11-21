@@ -482,6 +482,9 @@ void InitNet() {
 	} else if (EndsWith("alt",model_type) ){
 		sign_strat = 1;
 		printf("Asymmetry: 1 word every 2\n");
+	} else {
+		sign_strat = -1 ;
+		printf("No induced asymmetry in the word/context matrix\n");
 	}
 
 	//Real original word2vec model
@@ -613,6 +616,8 @@ void* BuildNextBatch(long long *batch, long long *a,long long *b,long long *d, l
 					} else if ( sign_strat == 1 ) {
 						if (*a < window)	batch[i*sample_size+3] = ((*a - *b) % 2) * 2 - 1; 
 						if (*a > window)	batch[i*sample_size+3] = ((*a - *b + 1) % 2) * 2 - 1; 
+					} else {
+						batch[i*sample_size+3] = 1; 
 					}
 					//ENDMOD
 
@@ -1276,8 +1281,8 @@ int main(int argc, char **argv) {
 		|| strcmp(model_type, "2real_unique_alt") == 0 || strcmp(model_type, "2real_unique_asym") == 0
 		|| strcmp(model_type, "2real_alt") == 0 || strcmp(model_type, "2real_asym") == 0
 		|| strcmp(model_type, "real_unique") == 0 || strcmp(model_type, "real_unique") == 0
-		|| strcmp(model_type, "real_original") == 0 )) {
-		printf("Model type '%s' unknown, choices are: 'complex_asym', 'complex_alt', 'complex_unique_asym', 'complex_unique_alt', 'real_original', 'real_unique', '2real_asym', '2real_alt','2real_unique_asym', '2real_unique_alt'.\n", model_type);
+		|| strcmp(model_type, "real_original") == 0 || strcmp(model_type, "complex") == 0 )) {
+		printf("Model type '%s' unknown, choices are: 'complex', 'complex_asym', 'complex_alt', 'complex_unique_asym', 'complex_unique_alt', 'real_original', 'real_unique', '2real_asym', '2real_alt','2real_unique_asym', '2real_unique_alt'.\n", model_type);
 	//ENDMOD
 		exit(1);
 	}
