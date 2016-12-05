@@ -7,6 +7,10 @@ original_real 600:
 Total accuracy: 73.01 %   Semantic accuracy: 81.20 %   Syntactic accuracy: 66.21 %
 
 
+
+complex 300:
+Total accuracy: 73.46 %   Semantic accuracy: 81.60 %   Syntactic accuracy: 66.70 %
+
 complex_asym 300:
 Total accuracy: 73.06 %   Semantic accuracy: 79.95 %   Syntactic accuracy: 67.33 % 
 
