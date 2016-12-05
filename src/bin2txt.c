@@ -28,7 +28,7 @@ int main(int argc, char **argv) {
 
 	fscanf(f, "%lld", &words);
 	fscanf(f, "%lld", &size);
-	//fprintf(fo, "%lld %lld\n", words, size); //2 times to concatenate real and imaginary parts
+	fprintf(fo, "%lld %lld\n", words, size);
 
 	for (b = 0; b < words; b++) {
 		a = 0;
