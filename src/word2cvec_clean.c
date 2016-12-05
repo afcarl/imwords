@@ -25,7 +25,7 @@
 #define MAX_SENTENCE_LENGTH 1000
 #define MAX_CODE_LENGTH 40
 
-#define USE_BLAS 1
+#define USE_BLAS 0
 
 #if USE_BLAS
 #include "cblas.h"
@@ -1244,7 +1244,7 @@ int main(int argc, char **argv) {
 		printf("\t-save-vocab <file>\n");
 		printf("\t\tThe vocabulary will be saved to <file>\n");
 		printf("\t-model <name>\n");
-		printf("\t\tThe model to use, possible value are 'complex_asym', 'complex_alt', 'complex_unique_asym', 'complex_unique_alt', 'real_original', 'real_unique', '2real_asym', '2real_alt', '2real_unique_asym', '2real_unique_alt'\n");
+		printf("\t\tThe model to use, possible value are 'complex', 'complex_asym', 'complex_alt', 'complex_unique_asym', 'complex_unique_alt', 'real_original', 'real_unique', '2real_asym', '2real_alt', '2real_unique_asym', '2real_unique_alt'\n");
 		printf("\t-adagrad <int>\n");
 		printf("\t\tActivates adagrad learning step if non-zero. Only for the 'real_original' model for the moment.\n");
 		printf("\t-read-vocab <file>\n");

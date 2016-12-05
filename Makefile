@@ -1,15 +1,16 @@
 CC = gcc
 #Using -Ofast instead of -O3 might result in faster code, but is supported only by newer GCC versions
 CFLAGS = -lm -pthread -O3 -march=native -Wall -funroll-loops -Wno-unused-result
+LDFLAGS = -lopenblas -I/opt/OpenBLAS/include/ -L/opt/OpenBLAS/lib/
 
-all: word2vec word2phrase distance word-analogy compute-accuracy 
+all: word2vec word2phrase distance word-analogy compute-accuracy word2cvec word2cvec_clean
 
 word2vec : src/word2vec.c
 	$(CC) $< -o $@ $(CFLAGS)
 word2cvec : src/word2cvec.c
-	$(CC) $< -o $@ $(CFLAGS)
+	$(CC) $< -o $@ $(CFLAGS) $(LDFLAGS)
 word2cvec_clean : src/word2cvec_clean.c
-	$(CC) $< -o $@ $(CFLAGS)
+	$(CC) $< -o $@ $(CFLAGS) $(LDFLAGS)
 word2phrase : src/word2phrase.c
 	$(CC) $< -o $@ $(CFLAGS)
 distance : src/distance.c
@@ -23,4 +24,4 @@ compute-accuracy : src/compute-accuracy.c
 	chmod +x *.sh
 
 clean:
-	rm -f word2vec word2phrase distance word-analogy compute-accuracy
+	rm -f word2vec word2phrase distance word-analogy compute-accuracy word2cvec word2cvec_clean
