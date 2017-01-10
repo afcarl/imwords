@@ -1,0 +1,10 @@
+bin2txt
+compute-accuracy
+distance
+word-analogy
+word2cvec
+word2cvec_clean
+word2phrase
+word2vec
+*.bin
+*.txt
