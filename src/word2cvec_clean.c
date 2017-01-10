@@ -1065,7 +1065,7 @@ void TrainModel() {
 	if ( strcmp(model_type, "real_unique") == 0 ){
 		free(ctxt_emb);
 		ctxt_emb = word_emb;
-	} else if ( strcmp(model_type, "complex_unique_asym") == 0 || strcmp(model_type, "complex_unique_alt") == 0 ){
+	} else if ( strcmp(model_type, "complex_unique_asym") == 0 || strcmp(model_type, "complex_unique_alt") == 0 || strcmp(model_type, "complex_unique") == 0){
 		free(ctxt_real);
 		free(ctxt_imag);
 		ctxt_real = word_real;
@@ -1277,12 +1277,13 @@ int main(int argc, char **argv) {
 
 	//TOMOD; Add model string id
 	if (! (strcmp(model_type, "complex_alt") == 0 || strcmp(model_type, "complex_asym") == 0
+	        || strcmp(model_type, "complex_unique") == 0
 		|| strcmp(model_type, "complex_unique_alt") == 0 || strcmp(model_type, "complex_unique_asym") == 0
 		|| strcmp(model_type, "2real_unique_alt") == 0 || strcmp(model_type, "2real_unique_asym") == 0
 		|| strcmp(model_type, "2real_alt") == 0 || strcmp(model_type, "2real_asym") == 0
 		|| strcmp(model_type, "real_unique") == 0 || strcmp(model_type, "real_unique") == 0
 		|| strcmp(model_type, "real_original") == 0 || strcmp(model_type, "complex") == 0 )) {
-		printf("Model type '%s' unknown, choices are: 'complex', 'complex_asym', 'complex_alt', 'complex_unique_asym', 'complex_unique_alt', 'real_original', 'real_unique', '2real_asym', '2real_alt','2real_unique_asym', '2real_unique_alt'.\n", model_type);
+		printf("Model type '%s' unknown, choices are: 'complex', 'complex_unique', 'complex_asym', 'complex_alt', 'complex_unique_asym', 'complex_unique_alt', 'real_original', 'real_unique', '2real_asym', '2real_alt','2real_unique_asym', '2real_unique_alt'.\n", model_type);
 	//ENDMOD
 		exit(1);
 	}
